@@ -67,6 +67,12 @@
         "path": "kit.scrub-allow",
         "rule": "*",
         "reason": "allowlist itself"
+      },
+      {
+        "path": "AGENTS.md",
+        "rule": "deny:*",
+        "match": "grep -rniE",
+        "reason": "the line is the scrub grep command itself"
       }
     ]
   },

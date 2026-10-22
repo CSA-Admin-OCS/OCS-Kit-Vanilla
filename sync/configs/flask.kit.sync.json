@@ -74,6 +74,12 @@
         "path": "kit.scrub-allow",
         "rule": "*",
         "reason": "allowlist itself"
+      },
+      {
+        "path": "README.md",
+        "rule": "secret:password-literal",
+        "match": "123Qwerty!",
+        "reason": "documented development-only default password (DEFAULT_PASSWORD fallback, refused in production)"
       }
     ]
   },
