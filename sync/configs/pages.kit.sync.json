@@ -81,7 +81,8 @@
     "Makefile",
     "_data/kit_school.yml",
     "LICENSE",
-    ".gitignore"
+    ".gitignore",
+    "_projects/.makeprojects"
   ],
   "replace": [
     {
