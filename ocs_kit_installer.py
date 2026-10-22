@@ -2320,7 +2320,7 @@ function field(name, label, type, help, extra=""){
 }
 function renderKit(){
   const kits = S.catalog.kits;
-  let h = `<h2>1. Choose a kit</h2><p class="help">A kit is a starting set of features. You can switch features on or off below, now or later.</p>`;
+  let h = `<h2>Choose a kit</h2><p class="help">A kit is a starting set of features. You can switch features on or off below, now or later.</p>`;
   if(S.existing){
     h += `<div class="note"><b>Existing install found in ${esc(A.install_dir)}.</b><div class="grid" style="margin-top:8px" role="radiogroup" aria-label="What to do">
       ${radio("action","install","Update / reinstall","Get the selected version, keep data, secrets and passwords.",A.action)}
@@ -2347,7 +2347,7 @@ async function refreshSelection(){
   } catch(err){ /* summary from the local mirror stays */ }
 }
 function renderInstall(){
-  return `<h2>2. What should be installed on this computer?</h2>
+  return `<h2>What should be installed on this computer?</h2>
   <p class="help"><b>Backend server</b>: the Flask and Spring APIs that store accounts and data. They run in Docker on this computer.<br>
   <b>Website</b>: the static Jekyll site students and teachers open. It is hosted for free on GitHub Pages, and you can preview it on this computer.</p>
   <div class="grid">${check("install_backend","Backend server","Flask + Spring in Docker (ports 8587, 8585).",A.install_backend)}
@@ -2359,7 +2359,7 @@ function renderInstall(){
   <div class="err" id="e_mode" role="alert"></div>`;
 }
 function renderSchool(){
-  return `<h2>3. School details</h2>` + field("school_name","School name","text","Shown on the website and admin pages.","autocomplete=organization") +
+  return `<h2>School details</h2>` + field("school_name","School name","text","Shown on the website and admin pages.","autocomplete=organization") +
     field("admin_email","Admin email","email","Contact email for the admin account.","autocomplete=email") +
     field("install_dir","Install folder","text","Code, settings and data go here. Back it up.") +
     (A.mode==="production" ? field("domain","Your domain","text","For example <code>myschool.org</code>. The installer sets up flask., spring. and pages. subdomains.") : "") +
@@ -2372,7 +2372,7 @@ function pwField(name, label){
   <div class="err" id="e_${name}" role="alert"></div>`;
 }
 function renderAccounts(){
-  return `<h2>4. Accounts</h2><p class="help">Passwords for the accounts created on first start. <b>Leave blank to auto-generate</b> (or, on a re-run, keep the current one).
+  return `<h2>Accounts</h2><p class="help">Passwords for the accounts created on first start. <b>Leave blank to auto-generate</b> (or, on a re-run, keep the current one).
    Everything is saved to <code>${esc(A.install_dir)}/CREDENTIALS.txt</code> (readable only by you). Don't use <code>$</code>.</p>` +
    (SEL ? `<p class="help">Accounts for the <b>${esc(S.catalog.kits[A.kit].name||A.kit)}</b> kit: ` + SEL.roles.map(r=>`<b>${esc(r.label)}</b> (user <code>${esc(r.seed_uid)}</code>)`).join(", ") + `. Only Admins can turn features on or off.</p>` : "") +
    ["admin_password","teacher_password","default_password"].map(f => pwField(f, SEL ? SEL.password_labels[f] : f)).join("");
@@ -2402,7 +2402,7 @@ function renderSetup(){
 }
 function renderWebsite(){
   const localWarn = A.mode==="local" ? `<div class="note">A site on GitHub Pages is public and can only talk to <b>production</b> backends (https). In "Try it on this computer" mode, only the <b>local preview</b> can log in to your localhost backends.</div>` : "";
-  return `<h2>5. Website</h2><p class="help">The website is static, so it doesn't run on your server: GitHub hosts it for free. The installer uses the GitHub CLI (<code>gh</code>) to copy (fork) the kit website into your account, configure it and turn on GitHub Pages.</p>${localWarn}
+  return `<h2>Website</h2><p class="help">The website is static, so it doesn't run on your server: GitHub hosts it for free. The installer uses the GitHub CLI (<code>gh</code>) to copy (fork) the kit website into your account, configure it and turn on GitHub Pages.</p>${localWarn}
   <div class="grid">${check("website_publish","Publish on GitHub Pages", A.mode==="production" ? "Live at pages."+(A.domain||"<domain>")+" (custom domain)." : "Live at <owner>.github.io/<repo>.", A.website_publish)}
   ${check("website_preview","Local preview","Run the site on this computer at localhost (uses Docker, no Ruby needed).", A.website_preview)}</div>
   <div class="err" id="e_website_preview" role="alert"></div>
@@ -2411,7 +2411,7 @@ function renderWebsite(){
   <div id="pvOpts" class="${A.website_preview?"":"hidden"}">` + field("preview_port","Preview port","number","Default 4500.","min=1024 max=65535") + `</div>`;
 }
 function renderCheck(){
-  return `<h2>6. Check this computer</h2><p class="help">The installer needs a few tools. Fix anything marked FAIL, then press <b>Check again</b>.</p>
+  return `<h2>Check this computer</h2><p class="help">The installer needs a few tools. Fix anything marked FAIL, then press <b>Check again</b>.</p>
   <div id="checks" aria-live="polite">Checking...</div><p><button type="button" id="recheck" class="small">Check again</button></p>`;
 }
 function renderReview(){
@@ -2425,7 +2425,7 @@ function renderReview(){
   }
   rows.push(["Install folder", A.install_dir]);
   rows.push(["Version", S.ref]);
-  return `<h2>7. Review</h2><dl class="review">` + rows.map(r=>`<dt>${esc(r[0])}</dt><dd>${esc(r[1])}</dd>`).join("") + `</dl>
+  return `<h2>Review</h2><dl class="review">` + rows.map(r=>`<dt>${esc(r[0])}</dt><dd>${esc(r[1])}</dd>`).join("") + `</dl>
    <p class="help" style="margin-top:14px">Building the backends takes 5-15 minutes the first time. You can leave this page open and watch the progress.</p>`;
 }
 function renderProgress(){
@@ -2470,8 +2470,6 @@ function render(){
   bind(cur.id);
 }
 function bind(id){
-  document.querySelectorAll("#pages input").forEach(inp => inp.addEventListener("change", onInput));
-  document.querySelectorAll("#pages input[type=text],#pages input[type=email],#pages input[type=password],#pages input[type=number]").forEach(inp => inp.addEventListener("input", onInput));
   if(id==="kit"){ renderFeatures(); $("#customize").addEventListener("change", e => { customize = e.target.checked; if(!customize) A.features = []; renderFeatures(); }); }
   if(id==="accounts") ["admin_password","teacher_password","default_password"].forEach(updRules);
   document.querySelectorAll("[data-show]").forEach(b => b.addEventListener("click", () => { const i = $("#f_"+b.dataset.show); const show = i.type==="password"; i.type = show?"text":"password"; b.textContent = show?"Hide":"Show"; b.setAttribute("aria-label", show?"Hide password":"Show password"); }));
@@ -2537,6 +2535,8 @@ async function poll(){
   } catch(err){ /* keep polling */ }
   setTimeout(poll, 1000);
 }
+$("#pages").addEventListener("change", e => { if(e.target.id !== "customize") onInput(e); });
+$("#pages").addEventListener("input", e => { if(["text","email","password","number"].includes(e.target.type)) onInput(e); });
 $("#back").addEventListener("click", () => { page = Math.max(0, page-1); render(); });
 $("#next").addEventListener("click", next);
 (async function(){
@@ -2698,7 +2698,7 @@ def run_gui(state, open_browser=True, headless=False):
         print("This computer has no display. From your own computer, forward the port over SSH:\n"
               "    ssh -L %d:127.0.0.1:%d <user>@<this-server>\n"
               "then open the link above in your browser.\n" % (port, port))
-    print("Keep this window open. Press Ctrl+C to quit.\n")
+    print("Keep this window open. Press Ctrl+C to quit.\n", flush=True)
     if open_browser and not headless:
         try:
             webbrowser.open(url)
