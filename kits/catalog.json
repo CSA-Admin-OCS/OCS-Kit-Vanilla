@@ -76,14 +76,25 @@
       ],
       "description": "JavaScript game engine, game projects (gamify, adventure/RPG), multiplayer, leaderboards, AI NPCs."
     },
-    "ai": {
-      "name": "AI assistants",
+    "ai-chatbot": {
+      "name": "AI chatbot",
       "category": "general",
       "labels": [
         "needs-api-key",
         "third-party-data"
       ],
-      "description": "Gemini/Groq chat proxies, AI tutor chatbots, AI FRQ grading and feedback."
+      "description": "AI chatbot / tutor on the website, answered through the backend's Gemini or Groq chat proxy (API keys stay on the server)."
+    },
+    "ai-grading": {
+      "name": "AI grading",
+      "category": "education",
+      "labels": [
+        "classroom",
+        "teacher-tools",
+        "needs-api-key",
+        "third-party-data"
+      ],
+      "description": "AI grading and feedback for free-response (FRQ) answers and assignments."
     },
     "social": {
       "name": "Social",
@@ -173,14 +184,15 @@
     },
     "education": {
       "name": "OCS Education",
-      "description": "A full CS classroom: lessons, code runners, assignments and grading, game engine, AI tutor, calendar, analytics, hall pass.",
+      "description": "A full CS classroom: lessons, code runners, assignments and grading, game engine, AI chatbot tutor and AI grading, calendar, analytics, hall pass.",
       "features": [
         "core",
         "lessons",
         "code-runner",
         "assignments",
         "game-engine",
-        "ai",
+        "ai-chatbot",
+        "ai-grading",
         "calendar",
         "analytics",
         "hallpass",
@@ -194,7 +206,7 @@
         "core",
         "code-runner",
         "game-engine",
-        "ai",
+        "ai-chatbot",
         "social",
         "calendar",
         "analytics",
