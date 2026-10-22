@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Canonical OCS-in-a-Kit feature catalog. Feature ids are shared by OCS-Kit-Pages, OCS-Kit-Flask and OCS-Kit-Spring; each repo's kits/catalog.json maps these ids to its own code. 'core' is always on. Each feature has a category (core | general | education). Kit presets are explicit feature lists; '*' in a FEATURES override still means every feature.",
+  "description": "Canonical OCS-in-a-Kit feature catalog. Feature ids are shared by OCS-Kit-Pages, OCS-Kit-Flask and OCS-Kit-Spring; each repo's kits/catalog.json maps these ids to its own code. 'core' is always on. Each feature has a category (core | general | education). Kit presets are explicit feature lists; '*' in a FEATURES override still means every feature. Each feature also has labels (see 'labels') describing what it needs and what data it handles.",
   "categories": {
     "core": {
       "name": "Core",
@@ -15,81 +15,151 @@
       "description": "Classroom-specific features (lessons, grading, hall pass). Included in the Education kit only; other kits can still opt in explicitly."
     }
   },
+  "labels": {
+    "student-safe": "Fine to give to students without extra setup or supervision.",
+    "classroom": "Built for running a class (teacher/student roles, periods, courses).",
+    "teacher-tools": "Mainly used by teachers or admins.",
+    "needs-api-key": "Needs a third-party API key in the backend .env to work.",
+    "third-party-data": "Sends user content to an outside service (e.g. an AI provider).",
+    "needs-external-service": "Needs a separate server or account you run yourself.",
+    "user-content": "Users post content others can see; plan for moderation.",
+    "personal-data": "Stores personal information about users.",
+    "privacy-sensitive": "Handles sensitive data (e.g. biometrics); check your privacy policy first.",
+    "runs-code": "Executes user code in sandboxed containers.",
+    "simulation": "Simulated money/markets/games, no real transactions.",
+    "demo": "Sample/teaching code, not needed in production."
+  },
   "features": {
     "core": {
       "name": "Core platform",
       "category": "core",
+      "labels": [
+        "student-safe",
+        "personal-data"
+      ],
       "always_on": true,
       "description": "Login, accounts, roles, sections/groups, profile, admin pages, blog + notebook pipeline, search."
     },
     "lessons": {
       "name": "Lessons",
       "category": "education",
+      "labels": [
+        "classroom",
+        "student-safe"
+      ],
       "description": "Course lessons and notebooks, lesson layouts, lesson progress tracking."
     },
     "code-runner": {
       "name": "Code runners",
       "category": "general",
+      "labels": [
+        "runs-code",
+        "student-safe"
+      ],
       "description": "Run student Python, JavaScript and Java in sandboxed runner containers; code-runner widgets in lessons."
     },
     "assignments": {
       "name": "Assignments and grading",
       "category": "education",
+      "labels": [
+        "classroom",
+        "teacher-tools",
+        "personal-data"
+      ],
       "description": "Assignments, submissions, grades, quizzes, quests, certificates, evaluations, team teaching, sprint dates, student/teacher toolkit, grade predictors."
     },
     "game-engine": {
       "name": "Game engine",
       "category": "general",
+      "labels": [
+        "student-safe"
+      ],
       "description": "JavaScript game engine, game projects (gamify, adventure/RPG), multiplayer, leaderboards, AI NPCs."
     },
     "ai": {
       "name": "AI assistants",
       "category": "general",
+      "labels": [
+        "needs-api-key",
+        "third-party-data"
+      ],
       "description": "Gemini/Groq chat proxies, AI tutor chatbots, AI FRQ grading and feedback."
     },
     "social": {
       "name": "Social",
       "category": "general",
+      "labels": [
+        "user-content"
+      ],
       "description": "Microblog, posts, comments, notes, announcements, chat and direct messages, personas."
     },
     "calendar": {
       "name": "Calendar",
       "category": "general",
+      "labels": [
+        "teacher-tools"
+      ],
       "description": "Class calendar, events, issue/calendar sync."
     },
     "analytics": {
       "name": "Analytics",
       "category": "general",
+      "labels": [
+        "teacher-tools",
+        "personal-data"
+      ],
       "description": "Usage analytics, GitHub contribution stats, skill snapshots, stats dashboards."
     },
     "hallpass": {
       "name": "Hall pass",
       "category": "education",
+      "labels": [
+        "classroom",
+        "teacher-tools"
+      ],
       "description": "Bathroom/hall pass queues, student help queue, approval requests."
     },
     "finance-sim": {
       "name": "Finance simulation",
       "category": "general",
+      "labels": [
+        "simulation",
+        "student-safe"
+      ],
       "description": "Bank, stocks, crypto and mining simulation, casino-style probability games."
     },
     "resume": {
       "name": "Resume builder",
       "category": "general",
+      "labels": [
+        "personal-data"
+      ],
       "description": "Student resume pages and API."
     },
     "kasm": {
       "name": "Kasm virtual desktops",
       "category": "general",
+      "labels": [
+        "needs-external-service"
+      ],
       "description": "Kasm Workspaces integration (needs a Kasm server)."
     },
     "face-recognition": {
       "name": "Face recognition",
       "category": "general",
+      "labels": [
+        "privacy-sensitive",
+        "personal-data"
+      ],
       "description": "Face registration/login (biometric data: check your school's privacy policy before enabling)."
     },
     "examples": {
       "name": "Teaching examples",
       "category": "general",
+      "labels": [
+        "demo",
+        "student-safe"
+      ],
       "description": "Classroom demo code: hacks, jokes, small sample APIs and pages, media-literacy lesson."
     }
   },
