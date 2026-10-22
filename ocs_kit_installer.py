@@ -63,6 +63,7 @@ DEFAULT_PREVIEW_PORT = 4500
 
 ANSWERS_FILE = "ocs-kit-installer.json"
 CREDENTIALS_FILE = "CREDENTIALS.txt"
+FEATURE_SETUP_FILE = "FEATURE-SETUP.md"
 LOG_FILE = "install.log"
 PREVIEW_CONTAINER = "ocskit-pages-preview"
 PREVIEW_IMAGE = "ocskit-pages-preview:1"
@@ -94,7 +95,10 @@ PASSWORD_FIELDS = [
 ]
 # Environment variables that can supply secrets in unattended mode
 SECRET_ENV = {"admin_password": "OCS_ADMIN_PASSWORD", "teacher_password": "OCS_TEACHER_PASSWORD",
-              "default_password": "OCS_DEFAULT_PASSWORD", "gemini_api_key": "OCS_GEMINI_API_KEY"}
+              "default_password": "OCS_DEFAULT_PASSWORD"}
+# Feature settings (from the catalog) can come from OCS_SETTING_<KEY> in unattended mode,
+# e.g. OCS_SETTING_GEMINI_API_KEY or OCS_SETTING_KIT_VOICERSS_API_KEY.
+SETTING_ENV_PREFIX = "OCS_SETTING_"
 SECRET_FIELDS = set(SECRET_ENV)
 
 DEFAULT_ANSWERS = {
@@ -108,7 +112,7 @@ DEFAULT_ANSWERS = {
     "admin_email": "",
     "install_dir": str(Path.home() / "ocs-kit"),
     "domain": "",
-    "gemini_api_key": "",
+    "settings": {},                 # feature settings from the catalog: {"service:KEY" or "KEY": value}
     "admin_password": "",
     "teacher_password": "",
     "default_password": "",
@@ -337,7 +341,235 @@ def selection_info(catalog, kit, spec):
             "summary": describe_selection(catalog, kit, overrides),
             "notes": selection_notes(catalog, kit, overrides),
             "api_key_features": [catalog["features"][f].get("name", f)
-                                 for f in needs_api_key(catalog, kit, overrides)]}
+                                 for f in needs_api_key(catalog, kit, overrides)],
+            "roles": kit_roles(catalog, kit), "password_labels": password_labels(catalog, kit),
+            "setup": [dict(e, settings=[dict(st, managed=st["key"] in managed_keys(st["service"]))
+                                        for st in e["settings"]]) for e in feature_setup_plan(catalog, kit, overrides)]}
+
+
+# ---------------------------------------------------------------------------
+# Roles and per-feature setup (all from the catalog)
+# ---------------------------------------------------------------------------
+
+# Backend .env keys for each catalog role (the backends' seeding contract).
+ROLE_ENV = {
+    "admin": {"uid": "ADMIN_UID", "name": {"flask": "ADMIN_USER", "spring": "ADMIN_NAME"}},
+    "staff": {"uid": "TEACHER_UID", "name": {"flask": "TEACHER_USER", "spring": "TEACHER_NAME"}},
+    "member": {"uid": "USER_UID", "name": {"flask": "USER_NAME", "spring": "USER_NAME"}},
+}
+# Which password question belongs to which role.
+ROLE_PASSWORD = {"admin": "admin_password", "staff": "teacher_password", "member": "default_password"}
+DEFAULT_ROLES = {"admin": {"label": "Admin", "seed_uid": "admin"},
+                 "staff": {"label": "Teacher", "seed_uid": "teacher"},
+                 "member": {"label": "User", "seed_uid": "user"}}
+SERVICES = ("flask", "spring", "pages")
+
+
+def kit_roles(catalog, kit):
+    """[{role, label, seed_uid, description}] for the kit, in the catalog's role order."""
+    kit_def = catalog["kits"].get(kit, {})
+    per_kit = kit_def.get("roles") or {}
+    order = list(catalog.get("roles") or {}) or list(DEFAULT_ROLES)
+    for r in per_kit:
+        if r not in order:
+            order.append(r)
+    out = []
+    for role in order:
+        r = dict(DEFAULT_ROLES.get(role, {}), **(per_kit.get(role) or {}))
+        if not r.get("seed_uid"):
+            continue
+        out.append({"role": role, "label": r.get("label") or role.capitalize(), "seed_uid": r["seed_uid"],
+                    "description": ((catalog.get("roles") or {}).get(role) or {}).get("description", "")})
+    return out
+
+
+def kit_roles_map(catalog, kit):
+    return {r["role"]: r for r in kit_roles(catalog, kit)}
+
+
+def password_labels(catalog, kit):
+    """{answers field: label} for the three password questions, using the kit's role names."""
+    roles = kit_roles_map(catalog, kit)
+    labels = {}
+    for role, field in ROLE_PASSWORD.items():
+        r = roles.get(role) or dict(DEFAULT_ROLES[role], role=role)
+        if role == "member":
+            labels[field] = "%s and default password (user: %s; also used for password resets)" % (
+                r["label"], r["seed_uid"])
+        else:
+            labels[field] = "%s password (user: %s)" % (r["label"], r["seed_uid"])
+    return labels
+
+
+def setting_id(setting):
+    return "%s:%s" % (setting["service"], setting["key"])
+
+
+def feature_setup_plan(catalog, kit, overrides):
+    """One entry per enabled feature: summary/steps/verify plus its settings.
+    A setting used by several features (same service+key) is listed once, under the first
+    feature, merged: required if any feature requires it, secret if any marks it secret."""
+    plan = []
+    seen = {}
+    for fid in resolve_features(catalog, kit, overrides):
+        f = catalog["features"][fid]
+        setup = f.get("setup") or {}
+        entry = {"feature": fid, "name": f.get("name", fid), "summary": setup.get("summary", ""),
+                 "steps": list(setup.get("steps") or []), "verify": setup.get("verify", ""), "settings": [],
+                 "all_settings": [], "required": []}
+        for raw in setup.get("settings") or []:
+            if raw.get("service") not in SERVICES or not raw.get("key"):
+                continue
+            sid = setting_id(raw)
+            entry["all_settings"].append(sid)
+            if raw.get("required"):
+                entry["required"].append(sid)
+            if sid in seen:
+                m = seen[sid]
+                m["required"] = m["required"] or bool(raw.get("required"))
+                m["secret"] = m["secret"] or bool(raw.get("secret"))
+                m["used_by"].append(entry["name"])
+                if raw.get("help") and raw["help"] not in m["help"]:
+                    m["help"] += " " + raw["help"]
+                continue
+            m = {"id": sid, "key": raw["key"], "service": raw["service"], "required": bool(raw.get("required")),
+                 "secret": bool(raw.get("secret")), "help": raw.get("help", ""), "get_it": raw.get("get_it", ""),
+                 "example": raw.get("example", ""), "used_by": [entry["name"]]}
+            seen[sid] = m
+            entry["settings"].append(m)
+        plan.append(entry)
+    return plan
+
+
+def all_catalog_settings(catalog):
+    out = {}
+    for f in catalog["features"].values():
+        for s_ in (f.get("setup") or {}).get("settings") or []:
+            if s_.get("key") and s_.get("service"):
+                out.setdefault(setting_id(s_), s_)
+    return out
+
+
+def setting_env_name(key):
+    return SETTING_ENV_PREFIX + re.sub(r"[^A-Za-z0-9]", "_", key).upper()
+
+
+def setting_value(settings, setting):
+    """Value typed for a setting: by 'service:KEY' first, then bare 'KEY'."""
+    v = settings.get(setting["id"] if "id" in setting else setting_id(setting))
+    if not v:
+        v = settings.get(setting["key"])
+    return (v or "").strip()
+
+
+def managed_keys(kind):
+    """.env keys the installer itself writes (so feature settings don't ask for them again)."""
+    if kind == "pages":
+        return {"kit.school_name", "kit.name", "kit.features"}
+    dummy = normalize_answers({"school_name": "x", "admin_email": "a@b.cd", "kit": "x"}, env={})
+    keys = set(build_env_values(kind, dummy, [], {}, {"RESET_TOKEN_SECRET": "x"}, DEFAULT_ROLES))
+    return keys | {"ADMIN_EMAIL"} if kind == "spring" else keys
+
+
+def settings_for_service(catalog, kit, overrides, settings, service):
+    """{KEY: value} of non-empty typed settings for one service (enabled features only)."""
+    out = {}
+    for entry in feature_setup_plan(catalog, kit, overrides):
+        for st in entry["settings"]:
+            if st["service"] == service:
+                v = setting_value(settings, st)
+                if v:
+                    out[st["key"]] = v
+    return out
+
+
+def pages_setting_edits(values):
+    """{'kit.voicerss_api_key': v, 'title': v, 'kit.backend.x': v} -> edit_config_yml kwargs."""
+    top, kit, backend, unsupported = {}, {}, {}, []
+    for key, v in values.items():
+        parts = key.split(".")
+        if len(parts) == 1:
+            top[parts[0]] = v
+        elif len(parts) == 2 and parts[0] == "kit":
+            kit[parts[1]] = v
+        elif len(parts) == 3 and parts[:2] == ["kit", "backend"]:
+            backend[parts[2]] = v
+        else:
+            unsupported.append(key)
+    return {"top": top, "kit": kit, "backend": backend}, unsupported
+
+
+def feature_status(catalog, kit, overrides, settings, installed, existing=None, managed=None):
+    """Per enabled feature: ready / needs-setup, with the required settings still missing.
+    installed: set of services set up on this computer; existing: {service: {KEY: value}}."""
+    existing = existing or {}
+    managed = managed if managed is not None else {svc: managed_keys(svc) for svc in SERVICES}
+    plan = feature_setup_plan(catalog, kit, overrides)
+    by_id = {}
+    for entry in plan:
+        for st in entry["settings"]:
+            by_id[st["id"]] = st
+    out = []
+    for entry in plan:
+        missing = []
+        for sid in entry["required"]:
+            st = by_id[sid]
+            have = (setting_value(settings, st) or (existing.get(st["service"]) or {}).get(st["key"])
+                    or st["key"] in managed.get(st["service"], set()))
+            if not have:
+                missing.append({"key": st["key"], "service": st["service"], "help": st["help"],
+                                "get_it": st["get_it"], "here": st["service"] in installed})
+        out.append({"feature": entry["feature"], "name": entry["name"], "summary": entry["summary"],
+                    "status": "needs-setup" if missing else "ready", "missing": missing,
+                    "steps": entry["steps"], "verify": entry["verify"]})
+    return out
+
+
+SERVICE_WHERE = {"flask": "flask/.env (Flask backend)", "spring": "spring/.env (Spring backend)",
+                 "pages": "_config.yml of the website (public!)"}
+
+
+def feature_setup_markdown(catalog, kit, overrides, status, school=""):
+    """A readable FEATURE-SETUP.md for the enabled features."""
+    plan = {e["feature"]: e for e in feature_setup_plan(catalog, kit, overrides)}
+    allset = all_catalog_settings(catalog)
+    lines = ["# Feature setup guide" + (" - " + school if school else ""), "",
+             "Kit: **%s**" % describe_selection(catalog, kit, overrides), ""]
+    mgmt = (catalog.get("feature_management") or {}).get("description")
+    lines += ["Feature changes after install are made by **Admins** in the website's admin dashboard, "
+              "or by re-running the installer (`--change-features`)." + ((" " + mgmt) if mgmt else ""), ""]
+    lines += ["| Feature | Status |", "|---|---|"]
+    for st in status:
+        lines.append("| %s | %s |" % (st["name"], "Ready" if st["status"] == "ready" else "**Needs setup**"))
+    lines.append("")
+    for st in status:
+        e = plan[st["feature"]]
+        lines += ["## %s (`%s`)" % (st["name"], st["feature"]), ""]
+        if e["summary"]:
+            lines += [e["summary"], ""]
+        lines += ["Status: %s" % ("ready" if st["status"] == "ready" else "**needs setup** - missing " +
+                                  ", ".join("`%s` in %s" % (m["key"], SERVICE_WHERE[m["service"]])
+                                            for m in st["missing"])), ""]
+        sids = e["all_settings"]
+        if sids:
+            lines += ["| Setting | Where | Required | What it is |", "|---|---|---|---|"]
+            for sid in sids:
+                raw = allset.get(sid, {})
+                help_ = (raw.get("help") or "").replace("|", "\\|")
+                if raw.get("get_it"):
+                    help_ += " Get it: %s" % raw["get_it"]
+                if raw.get("example"):
+                    help_ += " Example: `%s`" % raw["example"]
+                lines.append("| `%s` | %s | %s | %s |" % (
+                    raw.get("key", sid), SERVICE_WHERE.get(raw.get("service"), raw.get("service")),
+                    "yes" if sid in e["required"] else "no", help_))
+            lines.append("")
+            lines += ["After editing a backend .env, restart it: `docker compose up -d` in that folder.", ""]
+        if e["steps"]:
+            lines += ["Steps:", ""] + ["%d. %s" % (i, s_) for i, s_ in enumerate(e["steps"], 1)] + [""]
+        if e["verify"]:
+            lines += ["Check it works: %s" % e["verify"], ""]
+    return "\n".join(lines)
 
 
 def format_feature_list(catalog):
@@ -499,7 +731,7 @@ def cors_origins(answers, kind):
     return ",".join(dict.fromkeys(origins))
 
 
-def build_env_values(kind, answers, overrides, existing, shared):
+def build_env_values(kind, answers, overrides, existing, shared, roles=None):
     """All values the installer manages in a backend's .env.
 
     `existing` = this backend's current .env (empty on a fresh install); `shared` carries values
@@ -520,8 +752,11 @@ def build_env_values(kind, answers, overrides, existing, shared):
         values[key] = choose_value(key, None, existing, shared, lambda k=key: generate_secret(k))
     for field, key, _label in PASSWORD_FIELDS:
         values[key] = choose_value(key, answers.get(field), existing, shared, generate_password)
-    if answers.get("gemini_api_key"):
-        values["GEMINI_API_KEY"] = answers["gemini_api_key"]
+    for role, r in (roles or {}).items():
+        envs = ROLE_ENV.get(role)
+        if envs:
+            values[envs["uid"]] = r["seed_uid"]
+            values[envs["name"][kind]] = r["label"] + " User"
     if kind == "flask":
         values["SITE_DOMAIN"] = "" if local else domain
     else:
@@ -719,7 +954,7 @@ def normalize_answers(raw, defaults=None, env=None):
             a[field] = env[var]
     for k in ("install_backend", "install_website", "website_preview", "website_publish"):
         a[k] = _as_bool(a[k])
-    for k in ("school_name", "admin_email", "install_dir", "domain", "gemini_api_key", "github_owner",
+    for k in ("school_name", "admin_email", "install_dir", "domain", "github_owner",
               "github_repo", "kit", "mode", "action"):
         a[k] = str(a.get(k) or "").strip()
     a["domain"] = a["domain"].lower().rstrip(".")
@@ -731,6 +966,20 @@ def normalize_answers(raw, defaults=None, env=None):
         a["preview_port"] = -1
     if not a["install_website"]:
         a["website_preview"] = a["website_publish"] = False
+    raw_settings = a.get("settings") if isinstance(a.get("settings"), dict) else {}
+    a["settings"] = {str(k).strip(): str(v if v is not None else "").strip() for k, v in raw_settings.items()
+                     if str(k).strip()}
+    return a
+
+
+def apply_setting_env(a, catalog, env=None):
+    """Fill empty feature settings from OCS_SETTING_<KEY> environment variables."""
+    env = os.environ if env is None else env
+    for sid, st in all_catalog_settings(catalog).items():
+        if not setting_value(a["settings"], dict(st, id=sid)):
+            v = env.get(setting_env_name(st["key"]))
+            if v:
+                a["settings"][sid] = v.strip()
     return a
 
 
@@ -763,8 +1012,10 @@ def validate_answers(a, catalog):
     if a.get("mode") == "production":
         if not DOMAIN_RE.match(a.get("domain", "")):
             err["domain"] = "Enter your domain, like myschool.org (no http://)."
-    if a.get("gemini_api_key") and (UNSAFE_TEXT.search(a["gemini_api_key"]) or " " in a["gemini_api_key"]):
-        err["gemini_api_key"] = "That doesn't look like an API key."
+    for key, value in (a.get("settings") or {}).items():
+        is_pages = key.startswith("pages:") or key.startswith("kit.")
+        if value and (UNSAFE_TEXT.search(value) or (" " in value and not is_pages)):
+            err["setting:" + key] = "Please don't use spaces, $, quotes or backslashes here."
     for field, _key, _label in PASSWORD_FIELDS:
         pw = a.get(field) or ""
         if pw:
@@ -800,8 +1051,17 @@ def website_warnings(a):
     return warns
 
 
-def saved_answers(a):
-    return {k: v for k, v in a.items() if k in DEFAULT_ANSWERS and k not in SECRET_FIELDS and k != "action"}
+def saved_answers(a, catalog=None):
+    """Answers safe to keep in ocs-kit-installer.json: no passwords, no secret feature settings."""
+    out = {k: v for k, v in a.items() if k in DEFAULT_ANSWERS and k not in SECRET_FIELDS and k != "action"}
+    secret = set()
+    if catalog:
+        for sid, st in all_catalog_settings(catalog).items():
+            if st.get("secret"):
+                secret |= {sid, st["key"]}
+    out["settings"] = {k: v for k, v in (a.get("settings") or {}).items()
+                       if v and catalog is not None and k not in secret}
+    return out
 
 
 def load_saved_answers(install_dir):
@@ -982,6 +1242,7 @@ class Installer:
         self.dry = dry_run
         self.echo = echo
         self.overrides = normalize_overrides(catalog, answers["kit"], answers.get("features"))
+        self.roles = kit_roles_map(catalog, answers["kit"])
         self.root = Path(os.path.expanduser(answers["install_dir"])).resolve()
         self.dirs = {"flask": self.root / "flask", "spring": self.root / "spring",
                      "pages": self.root / "pages", "site": self.root / "github-site",
@@ -1225,7 +1486,9 @@ class Installer:
             env_path = d / ".env"
             existed = env_path.exists()
             base = self.read(env_path) if existed else self.read(d / ".env.example", "")
-            values = build_env_values(kind, self.a, self.overrides, envs[kind], shared)
+            values = build_env_values(kind, self.a, self.overrides, envs[kind], shared, self.roles)
+            extra = self.feature_settings(kind, exclude=values)
+            values.update(extra)
             kept = [k for k in SECRET_KEYS[kind] if envs[kind].get(k)]
             if kept:
                 self.log("%s: keeping existing %s" % (kind, ", ".join(kept)))
@@ -1237,6 +1500,15 @@ class Installer:
                        describe="%s .env with %s" % ("updated" if existed else "new", ", ".join(sorted(values))))
             self.passwords[kind] = {k: values[k] for _, k, _ in PASSWORD_FIELDS}
             self.log("%s: KIT=%s FEATURES=%s" % (kind, values["KIT"], values["FEATURES"] or "(preset)"))
+            if extra:
+                self.log("%s: feature settings written: %s" % (kind, ", ".join(sorted(extra))))
+
+    def feature_settings(self, service, exclude=()):
+        """Typed feature settings for a service, never overriding values the installer manages."""
+        vals = settings_for_service(self.catalog, self.a["kit"], self.overrides, self.a.get("settings") or {},
+                                    service)
+        skip = set(exclude) | (managed_keys(service) if service != "pages" else set())
+        return {k: v for k, v in vals.items() if k not in skip}
 
     def compose(self, kind, *args, check=True, quiet=False):
         return self.sh(["docker", "compose"] + list(args), cwd=self.dirs[kind], check=check, quiet=quiet,
@@ -1305,12 +1577,13 @@ class Installer:
                   ("spring", "http://localhost:%d/authenticate" % SPRING_PORT, {})]
         for kind, url, headers in checks:
             pw = (self.passwords.get(kind) or {}).get("ADMIN_PASSWORD") or ""
+            uid = self.roles.get("admin", DEFAULT_ROLES["admin"])["seed_uid"]
             if self.dry:
-                self.log("[dry-run] POST %s as admin" % url)
+                self.log("[dry-run] POST %s as %s" % (url, uid))
                 continue
-            code, body = self.http_json("POST", url, {"uid": "admin", "password": pw}, headers)
+            code, body = self.http_json("POST", url, {"uid": uid, "password": pw}, headers)
             if code == 200:
-                self.log("%s: admin login OK" % kind)
+                self.log("%s: %s login OK" % (kind, uid))
             else:
                 msg = ("%s: admin login returned HTTP %s. If this backend already had a database, its "
                        "accounts keep their old passwords (seed passwords only apply to a new database)."
@@ -1338,8 +1611,15 @@ class Installer:
         if self.dry and not text:
             self.log("[dry-run] edit %s: kit=%s features=%s" % (cfg, self.a["kit"], self.overrides))
             return
-        self.write(cfg, edit_config_yml(text, s["top"], s["kit"], s["backend"]),
-                   describe="kit %s, features %s" % (self.a["kit"], self.overrides))
+        edits, unsupported = pages_setting_edits(self.feature_settings("pages"))
+        for key in unsupported:
+            self.results["warnings"].append("Website setting %s must be set by hand in _config.yml." % key)
+        text = edit_config_yml(text, s["top"], s["kit"], s["backend"])
+        if any(edits.values()):
+            text = edit_config_yml(text, edits["top"], edits["kit"], edits["backend"])
+            self.log("website settings written: %s" % ", ".join(
+                sorted(list(edits["top"]) + ["kit." + k for k in edits["kit"]] + ["kit.backend." + k for k in edits["backend"]])))
+        self.write(cfg, text, describe="kit %s, features %s" % (self.a["kit"], self.overrides))
 
     def step_configure_website(self):
         self.configure_pages_dir(self.dirs["pages"], "preview")
@@ -1502,14 +1782,18 @@ class Installer:
             if not env_path.exists():
                 continue
             touched = True
-            self.write(env_path, set_env_values(self.read(env_path), values), 0o600,
-                       describe="KIT=%s FEATURES=%s" % (values["KIT"], values["FEATURES"]))
+            extra = self.feature_settings(kind, exclude=values)
+            self.write(env_path, set_env_values(self.read(env_path), dict(values, **extra)), 0o600,
+                       describe="KIT=%s FEATURES=%s%s" % (values["KIT"], values["FEATURES"],
+                                                        (" + " + ", ".join(sorted(extra))) if extra else ""))
             self.compose(kind, "up", "-d", "--force-recreate")
         if (self.dirs["flask"] / ".env").exists():
             self.wait_http("http://localhost:%d/login" % FLASK_PORT, 300, "Flask", self._compose_logs("flask"))
         if (self.dirs["spring"] / ".env").exists():
             self.wait_http("http://localhost:%d/login" % SPRING_PORT, 600, "Spring", self._compose_logs("spring"))
         kit_vals = {"name": a["kit"], "features": list(self.overrides)}
+        pedits, _ = pages_setting_edits(self.feature_settings("pages"))
+        kit_vals.update(pedits["kit"])
         pages = self.dirs["pages"]
         if (pages / "_config.yml").exists():
             touched = True
@@ -1535,17 +1819,31 @@ class Installer:
 
     # -- finish -----------------------------------------------------------
     def step_save(self):
-        data = saved_answers(self.a)
+        data = saved_answers(self.a, self.catalog)
         data["action"] = "install"
         if self.gh_owner:
             data["github_owner"] = self.gh_owner
         data["features"] = list(self.overrides)
         data["installer_version"] = KIT_VERSION
         self.write(self.root / ANSWERS_FILE, json.dumps(data, indent=2) + "\n")
+        self.feature_report = self.compute_feature_status()
+        self.write(self.root / FEATURE_SETUP_FILE, feature_setup_markdown(
+            self.catalog, self.a["kit"], self.overrides, self.feature_report, self.a.get("school_name", "")))
         if self.a["action"] == "change-features":
             return
         self.write(self.root / CREDENTIALS_FILE, self.credentials_text(), 0o600,
                    describe="accounts and URLs (chmod 600)")
+
+    def compute_feature_status(self):
+        installed, existing = set(), {}
+        for kind in ("flask", "spring"):
+            if self.a["install_backend"] or (self.dirs[kind] / ".env").exists():
+                installed.add(kind)
+            existing[kind] = parse_env(self.read(self.dirs[kind] / ".env", ""))
+        if self.a.get("install_website") or (self.dirs["pages"] / "_config.yml").exists():
+            installed.add("pages")
+        return feature_status(self.catalog, self.a["kit"], self.overrides, self.a.get("settings") or {},
+                              installed, existing)
 
     def backend_urls(self):
         if is_local(self.a):
@@ -1576,9 +1874,14 @@ class Installer:
                 [(k.capitalize(), self.passwords[k]) for k in kinds]
             for title, pw in groups:
                 out.append("Accounts (%s):" % title)
-                out.append("  admin    / %s" % pw.get("ADMIN_PASSWORD", ""))
-                out.append("  teacher  / %s" % pw.get("TEACHER_PASSWORD", ""))
-                out.append("  default password (sample students, resets): %s" % pw.get("DEFAULT_PASSWORD", ""))
+                for r in kit_roles(self.catalog, self.a["kit"]):
+                    field = ROLE_PASSWORD.get(r["role"])
+                    key = next((k for f, k, _ in PASSWORD_FIELDS if f == field), None)
+                    if key:
+                        out.append("  %-8s user %-10s password %s%s" % (
+                            r["label"], r["seed_uid"], pw.get(key, ""),
+                            "   (also the default password for sample accounts and resets)"
+                            if r["role"] == "member" else ""))
                 out.append("")
             out.append("Seed passwords only apply when a backend creates a new, empty database.")
             out.append("They are stored in flask/.env and spring/.env.")
@@ -1620,10 +1923,17 @@ class Installer:
                     "nginx_files": [str(self.dirs["nginx"] / "flask.conf"), str(self.dirs["nginx"] / "spring.conf")]
                     if a["install_backend"] else [],
                     "nginx_commands": nginx_commands(self.dirs["nginx"], a["domain"]) if a["install_backend"] else []}
+        report = getattr(self, "feature_report", None) or self.compute_feature_status()
+        mgmt = ("Feature changes after install are made by Admins in the website's admin dashboard, or by "
+                "re-running this installer (Change kit / features).")
+        extra = (self.catalog.get("feature_management") or {}).get("description")
         return {"ok": ok, "kit": describe_selection(self.catalog, a["kit"], self.overrides),
+                "features": report, "feature_management": mgmt + ((" " + extra) if extra else ""),
+                "setup_guide": str(root / FEATURE_SETUP_FILE),
                 "urls": [{"label": l, "url": u} for l, u in urls],
                 "credentials_file": str(root / CREDENTIALS_FILE) if a["action"] == "install" else "",
-                "accounts": ["admin", "teacher"] if a["install_backend"] else [],
+                "accounts": [{"label": r["label"], "uid": r["seed_uid"]} for r in kit_roles(self.catalog, a["kit"])]
+                if a["install_backend"] else [],
                 "warnings": self.results["warnings"], "manage": manage, "production": prod,
                 "log_file": str(root / LOG_FILE), "install_dir": str(root), "dry_run": self.dry}
 
@@ -1635,7 +1945,16 @@ def format_summary(s):
         out.append("")
         out += ["  %-45s %s" % (u["label"], u["url"]) for u in s["urls"]]
     if s["credentials_file"]:
-        out += ["", "Accounts (admin, teacher) and passwords: " + s["credentials_file"]]
+        accts = ", ".join("%s (%s)" % (x["label"], x["uid"]) for x in s.get("accounts") or [])
+        out += ["", "Accounts%s - passwords in: %s" % ((" " + accts) if accts else "", s["credentials_file"])]
+    if s.get("features"):
+        out += ["", "Features:"]
+        for f in s["features"]:
+            out.append("  [%s] %s" % ("ready" if f["status"] == "ready" else "NEEDS SETUP", f["name"]))
+            for m in f["missing"]:
+                out.append("        set %s in %s%s" % (m["key"], SERVICE_WHERE[m["service"]],
+                                                     (" - get it: " + m["get_it"]) if m["get_it"] else ""))
+        out += ["  Setup guide for every feature: " + s["setup_guide"], "  " + s["feature_management"]]
     for w in s["warnings"]:
         out += ["", "NOTE: " + w]
     p = s.get("production")
@@ -1754,7 +2073,7 @@ def run_cli_wizard(catalog, defaults, inp=input):
     if _ask_yes("   Customize features?", default=bool(a["features"]), inp=inp):
         a["features"] = cli_choose_features(catalog, kit, a["features"], inp)
     if a["action"] == "change-features":
-        return a
+        return cli_feature_setup(catalog, a, inp)
     print("\n2) What should be installed on THIS computer?")
     what = _ask_choice("", [("both", "Backend server and website"), ("backend", "Backend server only (Flask + Spring in Docker)"),
                             ("website", "Website only (frontend)")],
@@ -1773,17 +2092,15 @@ def run_cli_wizard(catalog, defaults, inp=input):
     if a["mode"] == "production":
         a["domain"] = _ask("Domain (e.g. myschool.org)", a["domain"],
                            lambda v: validate_answers(normalize_answers(dict(a, domain=v)), catalog).get("domain"), inp=inp)
-    key_feats = needs_api_key(catalog, a["kit"], a["features"])
-    if key_feats and a["install_backend"]:
-        names = ", ".join(catalog["features"][f].get("name", f) for f in key_feats)
-        a["gemini_api_key"] = _ask("Gemini API key for %s (optional, Enter to skip)" % names, "", secret=True, inp=inp)
     if a["install_backend"]:
         print("\n4) Accounts. Passwords need 8+ characters with upper, lower, digit and one of %s."
               % SPRING_SYMBOLS)
         print("   Leave blank to keep the current one (re-run) or auto-generate.")
-        for field, _key, label in PASSWORD_FIELDS:
-            a[field] = _ask(label + " password", "", secret=True, inp=inp,
+        labels = password_labels(catalog, a["kit"])
+        for field, _key, _label in PASSWORD_FIELDS:
+            a[field] = _ask(labels[field], "", secret=True, inp=inp,
                             validate=lambda v: ("Needs " + ", ".join(validate_password(v))) if v and validate_password(v) else None)
+    cli_feature_setup(catalog, a, inp)
     if a["install_website"]:
         print("\n5) Website")
         for w in website_warnings(dict(a, website_publish=True)) if is_local(a) else []:
@@ -1795,6 +2112,44 @@ def run_cli_wizard(catalog, defaults, inp=input):
         a["website_preview"] = _ask_yes("Run a local preview on this computer?", a["website_preview"] or not a["website_publish"], inp)
         if a["website_preview"]:
             a["preview_port"] = _ask("Preview port", str(a["preview_port"]), inp=inp)
+    return a
+
+
+def installed_services(a):
+    out = set()
+    if a.get("install_backend"):
+        out |= {"flask", "spring"}
+    if a.get("install_website"):
+        out.add("pages")
+    return out
+
+
+def cli_feature_setup(catalog, a, inp=input):
+    """Ask for the enabled features' settings (from the catalog). Blank = skip / keep."""
+    services = installed_services(a)
+    plan = feature_setup_plan(catalog, a["kit"], a["features"])
+    askable = [(e, st) for e in plan for st in e["settings"]
+               if st["service"] in services and st["key"] not in managed_keys(st["service"])]
+    if not askable:
+        return a
+    print("\nFeature setup. Press Enter to skip any setting; you can add it later (see FEATURE-SETUP.md).")
+    last = None
+    settings = dict(a.get("settings") or {})
+    for entry, st in askable:
+        if entry is not last:
+            print("\n  %s: %s" % (entry["name"], entry["summary"]))
+            last = entry
+        print("    %s -> %s%s" % (st["key"], SERVICE_WHERE[st["service"]], "  (required)" if st["required"] else ""))
+        if st["help"]:
+            print("      " + st["help"])
+        if st["get_it"]:
+            print("      get it: " + st["get_it"])
+        cur = setting_value(settings, st)
+        prompt = "    %s%s" % (st["key"], (" (e.g. %s)" % st["example"]) if st["example"] else "")
+        v = _ask(prompt, "" if st["secret"] else cur, secret=st["secret"], inp=inp)
+        if v:
+            settings[st["id"]] = v
+    a["settings"] = settings
     return a
 
 
@@ -1935,8 +2290,9 @@ function pwProblems(p){ const r=[]; if(p.length<8) r.push("len"); if(!/[A-Z]/.te
 const PAGES = [
   {id:"kit", title:"Kit", fields:["kit","features","action"]},
   {id:"install", title:"Install", fields:["install_backend","mode"]},
-  {id:"school", title:"School", fields:["school_name","admin_email","install_dir","domain","gemini_api_key"]},
+  {id:"school", title:"School", fields:["school_name","admin_email","install_dir","domain"]},
   {id:"accounts", title:"Accounts", fields:["admin_password","teacher_password","default_password"]},
+  {id:"setup", title:"Features", fields:[]},
   {id:"website", title:"Website", fields:["website_preview","website_publish","github_owner","github_repo","preview_port"]},
   {id:"check", title:"Check", fields:[]},
   {id:"review", title:"Review", fields:[]},
@@ -1944,7 +2300,7 @@ const PAGES = [
   {id:"finish", title:"Done", fields:[]},
 ];
 function visible(p){
-  if(A.action === "change-features") return ["kit","check","review","progress","finish"].includes(p.id);
+  if(A.action === "change-features") return ["kit","setup","check","review","progress","finish"].includes(p.id);
   if(p.id==="accounts") return A.install_backend;
   if(p.id==="website") return A.install_website;
   return true;
@@ -2007,7 +2363,7 @@ function renderSchool(){
     field("admin_email","Admin email","email","Contact email for the admin account.","autocomplete=email") +
     field("install_dir","Install folder","text","Code, settings and data go here. Back it up.") +
     (A.mode==="production" ? field("domain","Your domain","text","For example <code>myschool.org</code>. The installer sets up flask., spring. and pages. subdomains.") : "") +
-    ((A.install_backend && SEL && SEL.api_key_features.length) ? field("gemini_api_key","Gemini API key (optional)","password","Used by: " + esc(SEL.api_key_features.join(", ")) + ". Leave empty to skip; you can add it later in flask/.env and spring/.env.","autocomplete=off") : "");
+    "";
 }
 function pwField(name, label){
   return `<label class="f" for="f_${name}">${esc(label)}</label><div class="row"><input id="f_${name}" name="${name}" type="password" autocomplete="new-password" value="${esc(A[name]||"")}" aria-describedby="r_${name} e_${name}">
@@ -2018,8 +2374,31 @@ function pwField(name, label){
 function renderAccounts(){
   return `<h2>4. Accounts</h2><p class="help">Passwords for the accounts created on first start. <b>Leave blank to auto-generate</b> (or, on a re-run, keep the current one).
    Everything is saved to <code>${esc(A.install_dir)}/CREDENTIALS.txt</code> (readable only by you). Don't use <code>$</code>.</p>` +
-   pwField("admin_password","Admin password (user: admin)") + pwField("teacher_password","Teacher password (user: teacher)") +
-   pwField("default_password","Default password (sample students and password resets)");
+   (SEL ? `<p class="help">Accounts for the <b>${esc(S.catalog.kits[A.kit].name||A.kit)}</b> kit: ` + SEL.roles.map(r=>`<b>${esc(r.label)}</b> (user <code>${esc(r.seed_uid)}</code>)`).join(", ") + `. Only Admins can turn features on or off.</p>` : "") +
+   ["admin_password","teacher_password","default_password"].map(f => pwField(f, SEL ? SEL.password_labels[f] : f)).join("");
+}
+function services(){ const s = []; if(A.install_backend) s.push("flask","spring"); if(A.install_website) s.push("pages"); return s; }
+const WHERE = {flask:"Flask backend (flask/.env)", spring:"Spring backend (spring/.env)", pages:"website _config.yml (public)"};
+function setupFields(){ const sv = services(); return (SEL ? SEL.setup : []).flatMap(e => e.settings.filter(st => sv.includes(st.service) && !st.managed)); }
+function renderSetup(){
+  if(!SEL) return `<h2>Feature setup</h2><p>Loading...</p>`;
+  const sv = services(); let n = 0;
+  let h = `<h2>Feature setup</h2><p class="help">Settings for the features you picked. Everything is optional now: leave a field empty to skip it. Features missing a <b>required</b> setting are listed on the last page and in <code>FEATURE-SETUP.md</code> with instructions.</p>`;
+  SEL.setup.forEach(e => {
+    h += `<h3>${esc(e.name)}</h3>${e.summary?`<p class="help">${esc(e.summary)}</p>`:""}`;
+    e.settings.forEach(st => {
+      const id = "setting:" + st.id;
+      if(st.managed){ h += `<p class="help"><code>${esc(st.key)}</code>: set by the installer.</p>`; return; }
+      if(!sv.includes(st.service)){ h += `<p class="help"><code>${esc(st.key)}</code>${st.required?' <span class="tag">required</span>':""}: set it in the ${esc(WHERE[st.service])} where that part is installed.</p>`; return; }
+      const v = (A.settings||{})[st.id] || "";
+      h += `<label class="f" for="${esc(id)}">${esc(st.key)} ${st.required?'<span class="tag chg">required</span>':'<span class="tag">optional</span>'}${st.secret?'<span class="tag">secret</span>':""}</label>
+        <p class="help" id="h_${esc(id)}">${esc(st.help)} <br><small>Goes to: ${esc(WHERE[st.service])}${st.used_by.length>1?" • used by "+esc(st.used_by.join(", ")):""}</small>${st.get_it?` <a href="${esc(st.get_it)}" target="_blank" rel="noopener">Get it</a>`:""}</p>
+        <input id="${esc(id)}" name="${esc(id)}" data-setting="${esc(st.id)}" type="${st.secret?"password":"text"}" autocomplete="off" value="${esc(v)}" placeholder="${esc(st.example||"")}" aria-describedby="h_${esc(id)} e_${esc(id)}">
+        <div class="err" id="e_${esc(id)}" role="alert"></div>`; n++;
+    });
+    if(!e.settings.length) h += `<p class="help">No settings needed.</p>`;
+  });
+  return h;
 }
 function renderWebsite(){
   const localWarn = A.mode==="local" ? `<div class="note">A site on GitHub Pages is public and can only talk to <b>production</b> backends (https). In "Try it on this computer" mode, only the <b>local preview</b> can log in to your localhost backends.</div>` : "";
@@ -2057,8 +2436,15 @@ function renderFinish(s){
   let h = `<h2>${s.ok ? (s.dry_run ? "Dry run finished" : "OCS-in-a-Kit is ready") : "Install did not finish"}</h2><p class="summary">${esc(s.kit)}</p>`;
   if(!s.ok) h += `<div class="note">Something failed. Read the last lines of the log, fix the problem and run the installer again: it continues where it can and keeps your settings.</div>`;
   if(s.urls.length) h += `<h3>Open</h3><table><tbody>` + s.urls.map(u=>`<tr><td>${esc(u.label)}</td><td><a href="${esc(u.url)}" target="_blank" rel="noopener">${esc(u.url)}</a></td></tr>`).join("") + `</tbody></table>`;
-  if(s.credentials_file) h += `<h3>Accounts</h3><p>Log in as <b>${s.accounts.map(esc).join("</b> or <b>")||"admin"}</b>. Passwords are saved in <code>${esc(s.credentials_file)}</code> (only you can read it).</p>`;
+  if(s.credentials_file) h += `<h3>Accounts</h3><p>${s.accounts.map(a=>`${esc(a.label)}: <code>${esc(a.uid)}</code>`).join(" • ")}. Passwords are saved in <code>${esc(s.credentials_file)}</code> (only you can read it).</p>`;
   s.warnings.forEach(w => h += `<div class="note">${esc(w)}</div>`);
+  if(s.features && s.features.length){
+    h += `<h3>Features</h3><table><thead><tr><th>Feature</th><th>Status</th><th>What to do</th></tr></thead><tbody>` + s.features.map(f => `<tr><td>${esc(f.name)}</td>
+      <td>${f.status==="ready" ? '<span class="badge b-ok">READY</span>' : '<span class="badge b-warn">NEEDS SETUP</span>'}</td>
+      <td>${f.missing.map(m=>`Set <code>${esc(m.key)}</code> in ${esc(WHERE[m.service])}${m.get_it?` (<a href="${esc(m.get_it)}" target="_blank" rel="noopener">get it</a>)`:""}`).join("<br>")}
+      ${f.status!=="ready" && f.steps.length ? "<ol>" + f.steps.map(x=>`<li>${esc(x)}</li>`).join("") + "</ol>" : ""}${f.verify?`<small>Check: ${esc(f.verify)}</small>`:""}</td></tr>`).join("") + `</tbody></table>
+      <p class="help">${esc(s.feature_management)} Setup guide for every feature: <code>${esc(s.setup_guide)}</code></p>`;
+  }
   if(s.production){
     const p = s.production;
     h += `<h3>Production: next steps</h3><p>1. Add these DNS records at your domain registrar:</p><table><thead><tr><th>Type</th><th>Name</th><th>Points to</th></tr></thead><tbody>` +
@@ -2073,7 +2459,7 @@ function renderFinish(s){
 function render(){
   const vp = vis(), cur = vp[page];
   $("#stepper").innerHTML = vp.map((p,i)=>`<li class="${i===page?"cur":(i<page?"done":"")}" ${i===page?'aria-current="step"':""}>${esc(p.title)}</li>`).join("");
-  const r = {kit:renderKit, install:renderInstall, school:renderSchool, accounts:renderAccounts, website:renderWebsite, check:renderCheck,
+  const r = {kit:renderKit, install:renderInstall, school:renderSchool, accounts:renderAccounts, setup:renderSetup, website:renderWebsite, check:renderCheck,
              review:renderReview, progress:renderProgress, finish:()=>renderFinish(S.summary)}[cur.id];
   $("#pages").innerHTML = `<section class="card" aria-labelledby="ph">${r()}</section>`;
   const h2 = $("#pages h2"); if(h2){ h2.id="ph"; h2.tabIndex=-1; }
@@ -2102,6 +2488,7 @@ function updRules(name){
 function onInput(e){
   const t = e.target;
   if(t.dataset.f){ const sel = new Set(resolve(A.kit, A.features)); t.checked ? sel.add(t.dataset.f) : sel.delete(t.dataset.f); A.features = overrides(A.kit, [...sel]); renderFeatures(); return; }
+  if(t.dataset.setting){ A.settings = A.settings || {}; A.settings[t.dataset.setting] = t.value; return; }
   if(!t.name) return;
   if(t.type==="radio"){ if(t.name==="kit" && A.kit!==t.value) A.features = []; A[t.name] = t.value; render(); return; }
   if(t.type==="checkbox"){ A[t.name] = t.checked; if(t.name==="website_publish"||t.name==="website_preview"||t.name.startsWith("install_")) { render(); } return; }
@@ -2119,15 +2506,16 @@ async function runCheck(){
 async function validate(fields){
   const r = await api("/api/validate", A);
   let first = null;
-  fields.forEach(f => { const el = $("#e_"+f); if(el) el.textContent = r.errors[f] || ""; if(r.errors[f] && !first) first = f; });
-  if(first){ const i = $("#f_"+first) || $(`#pages [name=${first}]`); if(i) i.focus(); $("#globalErr").textContent = "Please fix the highlighted fields."; return false; }
+  fields.forEach(f => { const el = document.getElementById("e_"+f); if(el) el.textContent = r.errors[f] || ""; if(r.errors[f] && !first) first = f; });
+  if(first){ const i = document.getElementById("f_"+first) || document.getElementById(first) || document.querySelector(`#pages [name="${first}"]`); if(i) i.focus(); $("#globalErr").textContent = "Please fix the highlighted fields."; return false; }
   return true;
 }
 async function next(){
   const vp = vis(), cur = vp[page];
   $("#next").disabled = true;
   try {
-    if(cur.fields.length && !(await validate(cur.fields))) return;
+    const fields = cur.id==="setup" ? setupFields().map(st => "setting:" + st.id) : cur.fields;
+    if(fields.length && !(await validate(fields))) return;
     if(cur.id==="check"){ if(!prereqs){ await runCheck(); }
       if(prereqs && prereqs.some(i=>i.status==="fail") && !S.dry_run){ $("#globalErr").textContent = "Fix the items marked FAIL first, then press Check again."; return; } }
     if(cur.id==="review"){
@@ -2153,7 +2541,8 @@ $("#back").addEventListener("click", () => { page = Math.max(0, page-1); render(
 $("#next").addEventListener("click", next);
 (async function(){
   S = await api("/api/state");
-  A = S.answers;
+  A = S.answers; A.settings = A.settings || {};
+  try { SEL = await api("/api/selection", {kit:A.kit, features:A.features}); } catch(err){}
   customize = (A.features||[]).length > 0;
   $("#version").textContent = "Version " + S.ref + (S.dry_run ? "" : "") + " \u2022 " + S.os;
   $("#dry").classList.toggle("hidden", !S.dry_run);
@@ -2230,8 +2619,8 @@ class GuiHandler(http.server.BaseHTTPRequestHandler):
             with st.lock:
                 running = st.installer is not None
                 summary = st.installer.summary if st.installer else None
-            ans = {k: v for k, v in st.answers.items() if k not in SECRET_FIELDS or k == "gemini_api_key"}
-            ans["gemini_api_key"] = ""
+            ans = saved_answers(st.answers, st.catalog)
+            ans.update({k: st.answers[k] for k in ("action", "install_dir")})
             groups = [dict(cat, features=fids) for cat, fids in feature_groups(st.catalog)]
             return self._send(200, {"catalog": st.catalog, "groups": groups, "answers": ans, "existing": st.existing,
                                     "ref": st.args.ref, "dry_run": st.args.dry_run, "os": os_name(),
@@ -2390,7 +2779,7 @@ def initial_answers(args, catalog):
         merged["action"] = "change-features"
     elif not raw.get("action"):
         merged["action"] = "install"
-    a = normalize_answers(merged)
+    a = apply_setting_env(normalize_answers(merged), catalog)
     if a["kit"] not in catalog["kits"]:
         a["kit"] = "education" if "education" in catalog["kits"] else next(iter(catalog["kits"]))
     else:

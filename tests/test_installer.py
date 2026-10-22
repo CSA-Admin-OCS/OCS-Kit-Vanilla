@@ -31,16 +31,38 @@ FIXTURE = {
                    "general": {"name": "General", "description": "For anyone."},
                    "school": {"name": "School", "description": "Classroom only."}},
     "labels": {"needs-api-key": "Needs a key.", "privacy-sensitive": "Careful.", "safe": "Fine."},
+    "roles": {"admin": {"description": "Runs it."}, "staff": {"description": "Helps."},
+              "member": {"description": "Uses it."}},
+    "feature_management": {"description": "Only admins change features."},
     "features": {
-        "base": {"name": "Base", "always_on": True, "category": "core", "labels": ["safe"]},
-        "alpha": {"name": "Alpha", "category": "general", "labels": ["safe"]},
-        "beta": {"name": "Beta", "category": "general", "labels": ["needs-api-key"]},
-        "gamma": {"name": "Gamma", "category": "school", "labels": []},
+        "base": {"name": "Base", "always_on": True, "category": "core", "labels": ["safe"],
+                 "setup": {"summary": "Works.", "settings": [
+                     {"key": "MAIL_USERNAME", "service": "spring", "required": False, "secret": False,
+                      "help": "SMTP user."}], "steps": ["Sign in."], "verify": "Open profile."}},
+        "alpha": {"name": "Alpha", "category": "general", "labels": ["safe"],
+                  "setup": {"summary": "Pages key.", "settings": [
+                      {"key": "kit.alpha_key", "service": "pages", "required": False, "secret": False,
+                       "help": "Public key."}]}},
+        "beta": {"name": "Beta", "category": "general", "labels": ["needs-api-key"],
+                 "setup": {"summary": "Needs a key.", "settings": [
+                     {"key": "BETA_KEY", "service": "flask", "required": True, "secret": True,
+                      "help": "Beta key.", "get_it": "https://example.org/key"},
+                     {"key": "BETA_KEY", "service": "spring", "required": False, "secret": True,
+                      "help": "Same key."}],
+                     "steps": ["Add the key."], "verify": "Ask it something."}},
+        "gamma": {"name": "Gamma", "category": "school", "labels": [],
+                  "setup": {"settings": [
+                      {"key": "BETA_KEY", "service": "flask", "required": False, "secret": True, "help": "Shared."},
+                      {"key": "ADMIN_EMAIL", "service": "spring", "required": True, "secret": False,
+                       "help": "Owner."}]}},
         "delta": {"name": "Delta", "category": "general", "labels": ["privacy-sensitive"]},
     },
     "kits": {
         "small": {"name": "Small Kit", "features": ["base"]},
-        "class": {"name": "Class Kit", "features": ["base", "alpha", "gamma"]},
+        "class": {"name": "Class Kit", "features": ["base", "alpha", "gamma"],
+                  "roles": {"admin": {"label": "Admin", "seed_uid": "admin"},
+                            "staff": {"label": "Teacher", "seed_uid": "teacher"},
+                            "member": {"label": "Student", "seed_uid": "student"}}},
         "all": {"name": "All Kit", "features": ["*"]},
     },
 }
@@ -182,6 +204,84 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("labels: needs-api-key", text)
 
 
+class RolesAndSetupTests(unittest.TestCase):
+    cat = ki.validate_catalog(json.loads(json.dumps(FIXTURE)))
+
+    def test_roles(self):
+        roles = ki.kit_roles(self.cat, "class")
+        self.assertEqual([(r["role"], r["label"], r["seed_uid"]) for r in roles],
+                         [("admin", "Admin", "admin"), ("staff", "Teacher", "teacher"), ("member", "Student", "student")])
+        self.assertEqual(roles[1]["description"], "Helps.")
+        # a kit without roles falls back to defaults
+        self.assertEqual(ki.kit_roles_map(self.cat, "small")["staff"]["seed_uid"], "teacher")
+        labels = ki.password_labels(self.cat, "class")
+        self.assertIn("Student", labels["default_password"])
+        self.assertIn("user: teacher", labels["teacher_password"])
+
+    def test_role_env_values(self):
+        roles = ki.kit_roles_map(self.cat, "class")
+        f = ki.build_env_values("flask", good_answers(), [], {}, {}, roles)
+        s = ki.build_env_values("spring", good_answers(), [], {}, {}, roles)
+        self.assertEqual((f["ADMIN_UID"], f["TEACHER_UID"], f["USER_UID"]), ("admin", "teacher", "student"))
+        self.assertEqual(f["TEACHER_USER"], "Teacher User")
+        self.assertEqual(s["TEACHER_NAME"], "Teacher User")
+        self.assertEqual(s["USER_NAME"], "Student User")
+
+    def test_setup_plan_merges_shared_settings(self):
+        plan = ki.feature_setup_plan(self.cat, "all", [])
+        by_feature = {e["feature"]: e for e in plan}
+        beta = {st["id"]: st for st in by_feature["beta"]["settings"]}
+        self.assertTrue(beta["flask:BETA_KEY"]["required"])
+        self.assertEqual(beta["flask:BETA_KEY"]["used_by"], ["Beta", "Gamma"])
+        self.assertEqual(by_feature["gamma"]["all_settings"], ["flask:BETA_KEY", "spring:ADMIN_EMAIL"])
+        self.assertEqual([st["id"] for st in by_feature["gamma"]["settings"]], ["spring:ADMIN_EMAIL"])
+
+    def test_settings_per_service(self):
+        settings = {"flask:BETA_KEY": "k1", "BETA_KEY": "k2", "kit.alpha_key": "pub"}
+        self.assertEqual(ki.settings_for_service(self.cat, "all", [], settings, "flask"), {"BETA_KEY": "k1"})
+        self.assertEqual(ki.settings_for_service(self.cat, "all", [], settings, "spring"), {"BETA_KEY": "k2"})
+        self.assertEqual(ki.settings_for_service(self.cat, "all", [], settings, "pages"), {"kit.alpha_key": "pub"})
+        # disabled feature -> its settings are not written
+        self.assertEqual(ki.settings_for_service(self.cat, "small", [], settings, "flask"), {})
+        edits, bad = ki.pages_setting_edits({"kit.alpha_key": "pub", "title": "T", "kit.backend.flask": "u", "a.b": "x"})
+        self.assertEqual(edits, {"top": {"title": "T"}, "kit": {"alpha_key": "pub"}, "backend": {"flask": "u"}})
+        self.assertEqual(bad, ["a.b"])
+
+    def test_managed_keys(self):
+        self.assertIn("ADMIN_PASSWORD", ki.managed_keys("flask"))
+        self.assertIn("ADMIN_EMAIL", ki.managed_keys("spring"))
+        self.assertNotIn("BETA_KEY", ki.managed_keys("flask"))
+
+    def test_feature_status(self):
+        installed = {"flask", "spring", "pages"}
+        st = {f["feature"]: f for f in ki.feature_status(self.cat, "all", [], {}, installed)}
+        self.assertEqual(st["beta"]["status"], "needs-setup")
+        self.assertEqual([m["key"] for m in st["beta"]["missing"]], ["BETA_KEY"])
+        self.assertEqual(st["gamma"]["status"], "ready")          # ADMIN_EMAIL is managed; BETA_KEY optional here
+        self.assertEqual(st["alpha"]["status"], "ready")
+        ok = {f["feature"]: f for f in ki.feature_status(self.cat, "all", [], {"BETA_KEY": "x"}, installed)}
+        self.assertEqual(ok["beta"]["status"], "ready")
+        existing = {f["feature"]: f for f in ki.feature_status(self.cat, "all", [], {}, installed,
+                                                               existing={"flask": {"BETA_KEY": "old"}})}
+        self.assertEqual(existing["beta"]["status"], "ready")
+        md = ki.feature_setup_markdown(self.cat, "all", [], list(st.values()), "Test High")
+        self.assertIn("# Feature setup guide - Test High", md)
+        self.assertIn("| Beta | **Needs setup** |", md)
+        self.assertIn("Get it: https://example.org/key", md)
+        self.assertIn("Only admins change features.", md)
+        self.assertIn("Check it works: Ask it something.", md)
+
+    def test_setting_env_and_saved_answers(self):
+        a = ki.normalize_answers({"settings": {"kit.alpha_key": "pub", "flask:BETA_KEY": "secret"}}, env={})
+        ki.apply_setting_env(a, self.cat, env={"OCS_SETTING_MAIL_USERNAME": "smtp-user"})
+        self.assertEqual(a["settings"]["spring:MAIL_USERNAME"], "smtp-user")
+        saved = ki.saved_answers(a, self.cat)
+        self.assertEqual(saved["settings"].get("kit.alpha_key"), "pub")
+        self.assertNotIn("flask:BETA_KEY", saved["settings"])  # secret settings are never saved
+        e = ki.validate_answers(good_answers(settings={"flask:BETA_KEY": "a$b"}), self.cat)
+        self.assertIn("setting:flask:BETA_KEY", e)
+
+
 class RealCatalogTests(unittest.TestCase):
     def test_real_catalog_is_consistent(self):
         cat = ki.load_catalog(str(ROOT / "kits" / "catalog.json"))
@@ -314,7 +414,7 @@ class InstallerConfigureTests(unittest.TestCase):
         return ki.Installer(a, self.cat, repo_base=str(self.root), ref="main")
 
     def test_fresh_then_rerun(self):
-        self.make(features=["+beta"]).step_configure_backend()
+        self.make(features=["+beta"], settings={"flask:BETA_KEY": "bk", "ADMIN_PASSWORD": "Hack1!xx"}).step_configure_backend()
         f1 = ki.parse_env((self.root / "flask" / ".env").read_text())
         s1 = ki.parse_env((self.root / "spring" / ".env").read_text())
         self.assertEqual(oct((self.root / "flask" / ".env").stat().st_mode & 0o777), "0o600")
@@ -322,6 +422,10 @@ class InstallerConfigureTests(unittest.TestCase):
         self.assertEqual(s1["jwt.cookie.secure"], "false")
         self.assertEqual(s1["FEATURES"], "+beta")
         self.assertEqual(f1["COMPOSE_PROJECT_NAME"], "ocskit-flask")
+        self.assertEqual(f1["BETA_KEY"], "bk")
+        self.assertNotIn("BETA_KEY", s1)                       # spring value not typed
+        self.assertNotEqual(f1["ADMIN_PASSWORD"], "Hack1!xx")  # settings never override managed keys
+        self.assertEqual(f1["USER_UID"], "student")
         # user edits something unrelated; re-run with a new teacher password and another kit
         p = self.root / "flask" / ".env"
         p.write_text(p.read_text() + "MY_CUSTOM=1\n")
@@ -349,6 +453,20 @@ class InstallerConfigureTests(unittest.TestCase):
         after = (self.root / "flask" / ".env").read_text()
         diff = [l for l in after.splitlines() if l not in before.splitlines()]
         self.assertEqual(sorted(diff), ["FEATURES=+alpha", "KIT=small"])
+
+    def test_save_writes_guides(self):
+        inst = self.make(features=["+beta"])
+        inst.step_configure_backend()
+        inst.step_save()
+        guide = (self.root / ki.FEATURE_SETUP_FILE).read_text()
+        self.assertIn("Beta", guide)
+        creds = self.root / ki.CREDENTIALS_FILE
+        self.assertEqual(oct(creds.stat().st_mode & 0o777), "0o600")
+        self.assertIn("Student  user student", creds.read_text())
+        saved = json.loads((self.root / ki.ANSWERS_FILE).read_text())
+        self.assertNotIn("admin_password", saved)
+        summary = inst.build_summary(True)
+        self.assertEqual({f["feature"]: f["status"] for f in summary["features"]}["beta"], "needs-setup")
 
 
 class NginxTests(unittest.TestCase):
