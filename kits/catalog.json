@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "description": "Canonical OCS-in-a-Kit feature catalog. Feature ids are shared by OCS-Kit-Pages, OCS-Kit-Flask and OCS-Kit-Spring; each repo's kits/catalog.json maps these ids to its own code. 'core' is always on.",
+  "features": {
+    "core":              {"name": "Core platform", "always_on": true, "description": "Login, accounts, roles, sections/groups, profile, admin pages, blog + notebook pipeline, search."},
+    "lessons":           {"name": "Lessons", "description": "Course lessons and notebooks, lesson layouts, lesson progress tracking."},
+    "code-runner":       {"name": "Code runners", "description": "Run student Python, JavaScript and Java in sandboxed runner containers; code-runner widgets in lessons."},
+    "assignments":       {"name": "Assignments and grading", "description": "Assignments, submissions, grades, quizzes, quests, certificates, evaluations, team teaching, sprint dates, student/teacher toolkit, grade predictors."},
+    "game-engine":       {"name": "Game engine", "description": "JavaScript game engine, game projects (gamify, adventure/RPG), multiplayer, leaderboards, AI NPCs."},
+    "ai":                {"name": "AI assistants", "description": "Gemini/Groq chat proxies, AI tutor chatbots, AI FRQ grading and feedback."},
+    "social":            {"name": "Social", "description": "Microblog, posts, comments, notes, announcements, chat and direct messages, personas."},
+    "calendar":          {"name": "Calendar", "description": "Class calendar, events, issue/calendar sync."},
+    "analytics":         {"name": "Analytics", "description": "Usage analytics, GitHub contribution stats, skill snapshots, stats dashboards."},
+    "hallpass":          {"name": "Hall pass", "description": "Bathroom/hall pass queues, student help queue, approval requests."},
+    "finance-sim":       {"name": "Finance simulation", "description": "Bank, stocks, crypto and mining simulation, casino-style probability games."},
+    "resume":            {"name": "Resume builder", "description": "Student resume pages and API."},
+    "kasm":              {"name": "Kasm virtual desktops", "description": "Kasm Workspaces integration (needs a Kasm server)."},
+    "face-recognition":  {"name": "Face recognition", "description": "Face registration/login (biometric data: check your school's privacy policy before enabling)."},
+    "examples":          {"name": "Teaching examples", "description": "Classroom demo code: hacks, jokes, small sample APIs and pages, media-literacy lesson."}
+  },
+  "kits": {
+    "vanilla":   {"name": "OCS Vanilla",   "description": "Baseline platform, suitable for giving to students: accounts, profile, blog and notebooks.", "features": ["core"]},
+    "education": {"name": "OCS Education", "description": "A full CS classroom: lessons, code runners, assignments and grading, game engine, AI tutor, calendar, analytics, hall pass.", "features": ["core", "lessons", "code-runner", "assignments", "game-engine", "ai", "calendar", "analytics", "hallpass", "social"]},
+    "business":  {"name": "OCS Business",  "description": "Everything enabled; customize by removing features you don't want.", "features": ["*"]}
+  }
+}
