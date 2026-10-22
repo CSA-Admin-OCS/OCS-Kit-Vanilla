@@ -452,7 +452,7 @@
       "labels": [
         "personal-data"
       ],
-      "description": "Student resume pages and API.",
+      "description": "Personal resume / profile pages and API.",
       "setup": {
         "summary": "No setup needed.",
         "settings": [],
@@ -539,7 +539,7 @@
   "kits": {
     "vanilla": {
       "name": "OCS Vanilla",
-      "description": "Baseline platform, suitable for giving to students: accounts, profile, blog and notebooks.",
+      "description": "Baseline site that can be handed to students: accounts, profile, blog and notebooks. Admins can add features later.",
       "features": [
         "core"
       ],
@@ -573,7 +573,8 @@
         "calendar",
         "analytics",
         "hallpass",
-        "social"
+        "social",
+        "resume"
       ],
       "roles": {
         "admin": {
@@ -593,19 +594,14 @@
     },
     "business": {
       "name": "OCS Business",
-      "description": "Everything except classroom-specific (educational) features; customize by adding or removing features.",
+      "description": "For companies and organizations serving their own users (no students): accounts with Admin/Manager/Member roles, AI chatbot, posts and messaging, calendar, analytics, profiles/resumes. Add any other feature (code runners, game engine, finance simulation, Kasm, face recognition) from the admin dashboard.",
       "features": [
         "core",
-        "code-runner",
-        "game-engine",
         "ai-chatbot",
         "social",
         "calendar",
         "analytics",
-        "finance-sim",
-        "resume",
-        "kasm",
-        "face-recognition"
+        "resume"
       ],
       "roles": {
         "admin": {
