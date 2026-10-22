@@ -1,0 +1,84 @@
+{
+  "name": "spring",
+  "_status": "stub: exclude/protect/replace still need a review against upstream before first use",
+  "upstream": {
+    "url": "https://github.com/Open-Coding-Society/spring.git",
+    "branch": "main"
+  },
+  "catalog": {
+    "file": "kits/catalog.json",
+    "key": "spring"
+  },
+  "map": [],
+  "exclude": [
+    "hs_err_pid*.log",
+    "/local.properties",
+    "/message_template.md",
+    "GenerateTablePage.java",
+    "/audit2.sh",
+    "/delete.sh",
+    "/schema_full.txt",
+    "*.drawio",
+    ".LCKPerson.java~",
+    "/src/main/test",
+    "/volumes",
+    "/docs/forgot-password-pipeline.md",
+    "/.env",
+    "/.github",
+    "*.db",
+    "*.sqlite",
+    "*.log"
+  ],
+  "protect": [
+    "kits/**",
+    "kit.sync.json",
+    "kit.scrub-allow",
+    "README.md",
+    "AGENTS.md",
+    ".env.example",
+    "src/main/resources/application.properties",
+    "pom.xml",
+    "Dockerfile",
+    "docker-compose.yml",
+    "entrypoint.sh",
+    ".github/workflows/**",
+    "LICENSE",
+    ".gitignore"
+  ],
+  "replace": [],
+  "generated": [],
+  "scrub": {
+    "max_file_kb": 10240,
+    "pii_min_records": 10,
+    "strip_metadata": true,
+    "allowlist_file": "kit.scrub-allow",
+    "allow": [
+      {
+        "path": "LICENSE",
+        "rule": "deny:*",
+        "reason": "license attribution"
+      },
+      {
+        "path": "kit.sync.json",
+        "rule": "*",
+        "reason": "names the terms it removes"
+      },
+      {
+        "path": "kit.scrub-allow",
+        "rule": "*",
+        "reason": "allowlist itself"
+      }
+    ]
+  },
+  "suggest": {},
+  "validators": [],
+  "tests": [
+    [
+      "./mvnw",
+      "-q",
+      "-DskipTests",
+      "package"
+    ]
+  ],
+  "post_import": {}
+}

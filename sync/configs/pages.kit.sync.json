@@ -1,0 +1,342 @@
+{
+  "name": "pages",
+  "upstream": {
+    "url": "https://github.com/Open-Coding-Society/pages.git",
+    "branch": "main"
+  },
+  "catalog": {
+    "file": "kits/catalog.json",
+    "key": "pages"
+  },
+  "map": [
+    {
+      "upstream": "media/",
+      "kit": "features/media-literacy/"
+    },
+    {
+      "upstream": "hacks/",
+      "kit": "features/hacks/"
+    },
+    {
+      "upstream": "navigation/predictors/",
+      "kit": "features/predictors/"
+    }
+  ],
+  "exclude": [
+    "/git",
+    "/newsignup.html",
+    "/linuxcyberA",
+    "/.env",
+    "/.hintrc",
+    "/testing.html",
+    "/assets/api/config.js",
+    "/navigation/about.md",
+    "/images/about",
+    "/scripts/kasm_api_funcs.py",
+    "/scripts/pull_issues.py",
+    "/scripts/prs_issues*",
+    "/CNAME",
+    "/AGENTS.md",
+    "/AGENTS_MD_DOCUMENTATION.md",
+    "/instructions.md",
+    "/sprintinfo.md",
+    "/index3.md",
+    "/omake",
+    "/make-debug",
+    "/peppamazegame",
+    "/node_backend",
+    "/design",
+    "/docs",
+    "/capstone",
+    "/.devcontainer",
+    "/.github",
+    "/_docx",
+    "/_posts/2024-06-25-RDS-and-Flask-Setup-*",
+    "/_notebooks/CSP/big-ideas/big-idea-3-part-1-fundamentals/Period3",
+    "/Gemfile.lock",
+    "*.drawio",
+    "*.docx",
+    "*.log",
+    "nohup.out",
+    ".DS_Store",
+    "/_includes/projects",
+    "/_notebooks/projects",
+    "/_posts/projects",
+    "/_sass/projects",
+    "/assets/js/projects",
+    "/assets/css/projects",
+    "/images/projects"
+  ],
+  "protect": [
+    "_config.yml",
+    "kits/**",
+    "kit.sync.json",
+    "kit.scrub-allow",
+    "README.md",
+    ".env.example",
+    "assets/js/api/config.js",
+    "_includes/head-custom.html",
+    "scripts/apply_kit.py",
+    ".github/workflows/**",
+    "Makefile",
+    "_data/kit_school.yml",
+    "LICENSE",
+    ".gitignore"
+  ],
+  "replace": [
+    {
+      "id": "js-pages-domain",
+      "regex": true,
+      "files": [
+        "*.js",
+        "*.mjs"
+      ],
+      "pattern": "([\"'`])https?://pages\\.opencodingsociety\\.com/",
+      "replacement": "(window.baseurl || \"\") + \\1/",
+      "description": "absolute links to the OCS site in JS -> the kit's own baseurl (window.baseurl is set in head-custom.html)"
+    },
+    {
+      "id": "liquid-pages-domain",
+      "regex": true,
+      "files": [
+        "*.md",
+        "*.html",
+        "*.ipynb",
+        "*.markdown"
+      ],
+      "pattern": "https?://pages\\.opencodingsociety\\.com",
+      "replacement": "{{site.baseurl}}",
+      "description": "absolute links to the OCS site in pages/notebooks -> {{site.baseurl}}"
+    },
+    {
+      "id": "liquid-flask-domain",
+      "regex": true,
+      "files": [
+        "*.md",
+        "*.html",
+        "*.ipynb",
+        "*.markdown"
+      ],
+      "pattern": "https?://flask\\.opencodingsociety\\.com",
+      "replacement": "{{site.kit.backend.flask}}",
+      "description": "OCS Flask backend -> kit.backend.flask in _config.yml (JS must use pythonURI from assets/js/api/config.js)"
+    },
+    {
+      "id": "liquid-spring-domain",
+      "regex": true,
+      "files": [
+        "*.md",
+        "*.html",
+        "*.ipynb",
+        "*.markdown"
+      ],
+      "pattern": "https?://spring\\.opencodingsociety\\.com",
+      "replacement": "{{site.kit.backend.spring}}",
+      "description": "OCS Spring backend -> kit.backend.spring in _config.yml (JS must use javaURI from assets/js/api/config.js)"
+    }
+  ],
+  "generated": [
+    {
+      "prefix": "assets/js/projects/",
+      "source": "_projects/*/{name}"
+    },
+    {
+      "prefix": "assets/css/projects/",
+      "source": "_projects/*/{name}"
+    },
+    {
+      "prefix": "images/projects/",
+      "source": "_projects/*/{name}"
+    },
+    {
+      "prefix": "_includes/projects/",
+      "source": "_projects/*/{name}"
+    },
+    {
+      "prefix": "_sass/projects/",
+      "source": "_projects/*/{name}"
+    },
+    {
+      "prefix": "_notebooks/projects/",
+      "source": "_projects/*/{name}"
+    },
+    {
+      "prefix": "_posts/projects/",
+      "source": "_projects/*/{name}"
+    },
+    {
+      "prefix": "assets/audio/projects/",
+      "source": "_projects/*/{name}"
+    }
+  ],
+  "scrub": {
+    "max_file_kb": 10240,
+    "pii_min_records": 10,
+    "strip_metadata": true,
+    "allowlist_file": "kit.scrub-allow",
+    "allow": [
+      {
+        "path": "LICENSE",
+        "rule": "deny:*",
+        "reason": "license attribution to the original authors is required"
+      },
+      {
+        "path": "kit.sync.json",
+        "rule": "*",
+        "reason": "this file names the terms it removes"
+      },
+      {
+        "path": "kit.scrub-allow",
+        "rule": "*",
+        "reason": "allowlist itself"
+      }
+    ],
+    "skip": []
+  },
+  "suggest": {
+    "game-engine": [
+      "game",
+      "gamify",
+      "platformer",
+      "rpg",
+      "adventure",
+      "level",
+      "sprite",
+      "GameEngine",
+      "mansion",
+      "castle",
+      "racing",
+      "kirby",
+      "voidstriker",
+      "pirate",
+      "escape",
+      "heist",
+      "breakout",
+      "snake",
+      "connect4",
+      "whack",
+      "solitaire",
+      "blackjack"
+    ],
+    "lessons": [
+      "lesson",
+      "_notebooks",
+      "course",
+      "csa",
+      "csp",
+      "csse",
+      "foundation",
+      "java",
+      "python",
+      "javascript",
+      "sass",
+      "flask",
+      "bitshift",
+      "binary"
+    ],
+    "assignments": [
+      "assignment",
+      "grade",
+      "quiz",
+      "frq",
+      "toolkit",
+      "predictor",
+      "quest",
+      "certificate",
+      "plagiarism",
+      "submission",
+      "capstone"
+    ],
+    "ai-chatbot": [
+      "chatbot",
+      "gemini",
+      "groq",
+      "ai-",
+      "jarvis",
+      "tutor"
+    ],
+    "ai-grading": [
+      "aigrading",
+      "ai-grading",
+      "frq-grader",
+      "ai-make-debugger"
+    ],
+    "calendar": [
+      "calendar",
+      "sprint",
+      "event"
+    ],
+    "analytics": [
+      "analytics",
+      "stats",
+      "dashboard",
+      "contribution",
+      "presence"
+    ],
+    "hallpass": [
+      "hallpass",
+      "bathroom",
+      "queue",
+      "help"
+    ],
+    "finance-sim": [
+      "stock",
+      "crypto",
+      "casino",
+      "bank",
+      "finance",
+      "mining"
+    ],
+    "resume": [
+      "resume",
+      "portfolio"
+    ],
+    "kasm": [
+      "kasm"
+    ],
+    "face-recognition": [
+      "face",
+      "nod"
+    ],
+    "social": [
+      "blog",
+      "microblog",
+      "message",
+      "chat",
+      "forum",
+      "post",
+      "social"
+    ],
+    "examples": [
+      "hacks",
+      "example",
+      "demo",
+      "media",
+      "digital-famine",
+      "west-coast",
+      "cookie-clicker"
+    ]
+  },
+  "validators": [
+    [
+      "python3",
+      "scripts/apply_kit.py",
+      "--check"
+    ]
+  ],
+  "tests": [
+    [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-p",
+      "test_*.py"
+    ]
+  ],
+  "post_import": {
+    "makeprojects": true
+  }
+}

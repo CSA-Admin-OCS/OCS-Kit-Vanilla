@@ -1,0 +1,99 @@
+{
+  "name": "flask",
+  "_status": "stub: exclude/protect/replace still need a review against upstream before first use",
+  "upstream": {
+    "url": "https://github.com/Open-Coding-Society/flask.git",
+    "branch": "main"
+  },
+  "catalog": {
+    "file": "kits/catalog.json",
+    "key": "flask"
+  },
+  "map": [],
+  "exclude": [
+    "/instance",
+    "/backend.log",
+    "/cookies.txt",
+    "/stocks_table_exp.csv",
+    "/create_test_user.py",
+    "/copy_to_frontend.sh",
+    "/app.py",
+    "/host.py",
+    "/lock.toml",
+    "/testing",
+    "/scripts/old",
+    "/Social Media",
+    "/SOCIAL_MEDIA_SETUP.md",
+    "/websocket",
+    "/.env",
+    "/nginx_flask_8587.conf",
+    "/.github",
+    "*.db",
+    "*.sqlite",
+    "*.log"
+  ],
+  "protect": [
+    "kits/**",
+    "features.py",
+    "features/**",
+    "kit.sync.json",
+    "kit.scrub-allow",
+    "README.md",
+    ".env.example",
+    "__init__.py",
+    "main.py",
+    "scripts/db_init.py",
+    "requirements.txt",
+    "Dockerfile",
+    "docker-compose.yml",
+    "entrypoint.sh",
+    "deploy/**",
+    ".github/workflows/**",
+    "LICENSE",
+    ".gitignore"
+  ],
+  "replace": [],
+  "generated": [],
+  "scrub": {
+    "max_file_kb": 10240,
+    "pii_min_records": 10,
+    "strip_metadata": true,
+    "allowlist_file": "kit.scrub-allow",
+    "allow": [
+      {
+        "path": "LICENSE",
+        "rule": "deny:*",
+        "reason": "license attribution"
+      },
+      {
+        "path": "kit.sync.json",
+        "rule": "*",
+        "reason": "names the terms it removes"
+      },
+      {
+        "path": "kit.scrub-allow",
+        "rule": "*",
+        "reason": "allowlist itself"
+      }
+    ]
+  },
+  "suggest": {},
+  "validators": [
+    [
+      "python3",
+      "-m",
+      "features",
+      "--check"
+    ]
+  ],
+  "tests": [
+    [
+      "python3",
+      "-m",
+      "pytest",
+      "-q",
+      "tests"
+    ]
+  ],
+  "post_import": {}
+}
