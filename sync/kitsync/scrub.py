@@ -209,7 +209,7 @@ class Report(object):
             lines.append(f.format())
         if limit and len(fs) > limit:
             lines.append("... and %d more" % (len(fs) - limit))
-        summary = ", ".join("%s=%d" % kv for kv in sorted(self.by_category().items())) or "none"
+        summary = ", ".join("%s %d" % kv for kv in sorted(self.by_category().items())) or "none"
         lines.append("scrub gate: %s -- %d file(s) checked, %d finding(s) [%s], %d allowlisted" % (
             "PASS" if self.ok else "FAIL", self.files_checked, len(self.findings), summary, len(self.allowed)))
         return "\n".join(lines)

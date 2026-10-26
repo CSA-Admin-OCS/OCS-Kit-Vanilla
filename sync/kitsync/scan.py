@@ -181,7 +181,7 @@ def format_scan(r, markdown=False, max_paths=8):
     L.append("| group (upstream) | files | KB | suggested feature | new deps | missing refs | scrub findings |")
     L.append("|---|---:|---:|---|---:|---:|---|")
     for g in r["groups"]:
-        rules = ", ".join("%s=%d" % kv for kv in sorted(g.get("scrub_rules", {}).items()))
+        rules = ", ".join("%s %d" % kv for kv in sorted(g.get("scrub_rules", {}).items()))
         L.append("| %s | %d | %d | %s | %s | %s | %s |" % (
             g["group"] + ("" if g["kit_path"] == g["group"].split(" ")[0] else " -> " + g["kit_path"]),
             g["files"], g["kb"], g["suggested_feature"] or "?",

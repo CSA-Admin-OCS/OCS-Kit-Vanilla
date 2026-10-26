@@ -67,11 +67,20 @@ but not committed, so you can inspect them).
   caches) is always excluded.
 - **Catalog conflicts.** A path already owned by another feature is refused. Use `--move`
   to take it on purpose. A directory entry can't be split by `--move`.
-- **No credentials in output.** Every upstream URL is passed through `kitsync/urls.redact_url`
-  (it drops `user:token@` and secret-looking query values) before it is logged or stored, or
-  goes into a report, commit message or PR body. Git error output is redacted the same way. A
-  cached clone keeps only the redacted URL as `origin`, and fetches use the URL you pass.
-  In CI, pass tokens as secrets (`UPSTREAM_TOKEN`), never in the URL.
+- **No credentials in output (fail-closed).** All logged and stored text goes through
+  `kitsync/urls.redact_text`, and so does every upstream URL before it goes into a report,
+  commit message or PR body. Git and validator output is covered too. In each whitespace-separated
+  token:
+  - everything from `://` to the token's last `@` becomes `://***@`;
+  - scp-style `user@host:` keeps only `host:`;
+  - the value of any `name=value` whose name contains token, secret, pass, pwd, key, sig, auth,
+    credential, session, cookie or bearer becomes `REDACTED`.
+
+  Anything shaped like a known key (`AIza`, `ghp_`, `gsk_`, `xox`, `AKIA`, `sk-`) is replaced
+  wherever it appears, and long tokens are cut after redaction. It redacts too much rather than
+  too little. It runs in linear time and is fuzz-tested. A cached clone keeps only the redacted
+  URL as `origin`, and fetches use the URL you pass. In CI, pass tokens as secrets
+  (`UPSTREAM_TOKEN`), never in the URL.
 - **Masked reports.** `scan` output (markdown, text and JSON) replaces every denylisted term
   in upstream path names and rule ids with `[masked]`, because reports get committed and
   posted to issues. Every string in the report, keys included, is redacted and masked before it
