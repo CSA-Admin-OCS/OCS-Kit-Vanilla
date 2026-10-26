@@ -725,47 +725,136 @@ CONTAINER_UID = {"flask": 1000, "spring": None}
 DATA_DIR_MODE = 0o750
 
 
-def secure_data_dir(path, chown_to=None):
-    """Close one backend data folder to other local users: it holds the databases with password
-    hashes and student data. The folder gets 0o750, nothing below it keeps 'other' permissions,
-    database files get 0o600. With chown_to (installer running as root) everything is handed to
-    that uid. Symlinks are never followed or changed (lstat only), so a link inside the install
-    folder cannot redirect a chmod/chown elsewhere. Only entries this user owns are changed.
-    Returns False when `path` is not a real directory (e.g. a symlink) and nothing was done."""
-    path = str(path)
+def _euid():
+    return os.geteuid() if hasattr(os, "geteuid") else None
+
+
+_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+SAFE_FS = hasattr(os, "fwalk") and os.open in getattr(os, "supports_dir_fd", set()) \
+    and hasattr(os, "O_NOFOLLOW")
+
+
+def _open_dir_nofollow(base, rel_parts=(), create_mode=None):
+    """Open base/rel as a directory fd, one component at a time with O_NOFOLLOW, so no symlink
+    anywhere on the way is followed. With create_mode, missing components are created."""
+    fd = os.open(str(base), _DIR_FLAGS)
     try:
-        st = os.lstat(path)
+        for part in rel_parts:
+            try:
+                nfd = os.open(part, _DIR_FLAGS, dir_fd=fd)
+            except FileNotFoundError:
+                if create_mode is None:
+                    raise
+                os.mkdir(part, create_mode, dir_fd=fd)
+                nfd = os.open(part, _DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+        return fd
+    except OSError:
+        os.close(fd)
+        raise
+
+
+def _fix_fd(fd, new_mode, allowed, chown_to):
+    """chown/chmod through an already-open fd (never a path that could be swapped)."""
+    st = os.fstat(fd)
+    if st.st_uid not in allowed:
+        return
+    if chown_to is not None:
+        os.fchown(fd, chown_to, chown_to)
+    mode = stat.S_IMODE(st.st_mode)
+    new = new_mode(st, mode)
+    if new != mode:
+        os.fchmod(fd, new)
+
+
+def _fix_entry(name, dir_fd, new_mode, allowed, chown_to):
+    """Fix one directory entry: lstat it, skip symlinks/other types/foreign owners, then open it
+    with O_NOFOLLOW, check it is still the same inode and change it through the fd."""
+    try:
+        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return
+    is_dir = stat.S_ISDIR(st.st_mode)
+    if stat.S_ISLNK(st.st_mode) or not (is_dir or stat.S_ISREG(st.st_mode)) or st.st_uid not in allowed:
+        return
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | (getattr(os, "O_DIRECTORY", 0) if is_dir else 0)
+    try:
+        fd = os.open(name, flags, dir_fd=dir_fd)
+    except OSError:
+        return
+    try:
+        st2 = os.fstat(fd)
+        if (st2.st_dev, st2.st_ino) == (st.st_dev, st.st_ino):
+            _fix_fd(fd, new_mode, allowed, chown_to)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _fix_tree(fd, new_mode, allowed, chown_to):
+    for _root, dirs, files, rfd in os.fwalk(".", dir_fd=fd, follow_symlinks=False):
+        for name in dirs + files:
+            _fix_entry(name, rfd, new_mode, allowed, chown_to)
+
+
+def secure_data_dir(checkout, rel, chown_to=None):
+    """Create and close one backend data folder (checkout/rel) to other local users: it holds the
+    databases with password hashes and student data. The folder ends at 0o750, nothing below it
+    keeps 'other' permissions and database files get 0o600.
+
+    Race-free: every path component is opened with O_NOFOLLOW, the tree is walked with dir fds
+    (os.fwalk, follow_symlinks=False), symlinks are skipped and every change goes through an fd
+    of the verified inode. Only entries owned by this user (as root: root or chown_to) change.
+    As root the folder is first locked to 0o700, then handed to chown_to.
+    Returns False when the folder could not be opened safely (e.g. it is a symlink)."""
+    if not SAFE_FS:
+        Path(checkout, rel).mkdir(parents=True, exist_ok=True)  # Windows: no POSIX modes to fix
+        return True
+    euid = _euid()
+    as_root = euid == 0
+    allowed = ({0} | ({chown_to} if chown_to is not None else set())) if as_root else {euid}
+    chown = chown_to if as_root else None
+    try:
+        fd = _open_dir_nofollow(checkout, Path(rel).parts, create_mode=DATA_DIR_MODE)
     except OSError:
         return False
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+    try:
+        if as_root and os.fstat(fd).st_uid in allowed:
+            os.fchmod(fd, 0o700)
+        _fix_tree(fd, lambda st, mode: mode & ~0o007, allowed, chown)
+        _fix_dbs(fd, allowed)
+        _fix_fd(fd, lambda st, mode: DATA_DIR_MODE, allowed, chown)
+    finally:
+        os.close(fd)
+    return True
+
+
+def _fix_dbs(fd, allowed):
+    """Database files (*.db, *.sqlite) -> 0o600."""
+    for _root, _dirs, files, rfd in os.fwalk(".", dir_fd=fd, follow_symlinks=False):
+        for name in files:
+            if name.endswith((".db", ".sqlite")):
+                _fix_entry(name, rfd, lambda st, mode: 0o600, allowed, None)
+
+
+def strip_other_write(checkout, rel):
+    """Remove the 'other' write bit from checkout/rel and everything below it (repairs installs
+    made by an older installer that left data folders world-writable). Same safe walk."""
+    if not SAFE_FS:
+        return True
+    euid = _euid()
+    allowed = ({0} | {u for u in CONTAINER_UID.values() if u}) if euid == 0 else {euid}
+    try:
+        fd = _open_dir_nofollow(checkout, Path(rel).parts)
+    except OSError:
         return False
-    me = os.getuid() if hasattr(os, "getuid") else None
-    entries = [path]
-    for root, dirs, files in os.walk(path, followlinks=False):
-        entries += [os.path.join(root, n) for n in dirs + files]
-    for p in entries:
-        try:
-            st = os.lstat(p)
-        except OSError:
-            continue
-        if stat.S_ISLNK(st.st_mode) or not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
-            continue
-        try:
-            if chown_to is not None and me == 0:
-                os.chown(p, chown_to, chown_to, follow_symlinks=False)
-            elif me is not None and st.st_uid != me:
-                continue
-            mode = stat.S_IMODE(st.st_mode)
-            if p == path:
-                new = DATA_DIR_MODE
-            elif stat.S_ISREG(st.st_mode) and p.endswith((".db", ".sqlite")):
-                new = 0o600
-            else:
-                new = mode & ~0o007
-            if new != mode:
-                os.chmod(p, new)  # p is not a symlink (checked with lstat above)
-        except OSError:
-            pass
+    try:
+        _fix_tree(fd, lambda st, mode: mode & ~0o002, allowed, None)
+        _fix_fd(fd, lambda st, mode: mode & ~0o002, allowed, None)
+    finally:
+        os.close(fd)
     return True
 
 
@@ -1594,19 +1683,22 @@ class Installer:
         offset = int(self.a.get("port_offset") or 0)
         uid = os.getuid() if hasattr(os, "getuid") else None
         gid = os.getgid() if hasattr(os, "getgid") else None
+        root_install = _euid() == 0
         for kind in ("flask", "spring"):
             d = self.dirs[kind]
             cuid = CONTAINER_UID.get(kind)
-            for rel in DATA_DIRS[kind]:
-                data = d / rel
+            tops = list(dict.fromkeys(Path(rel).parts[0] for rel in DATA_DIRS[kind]))
+            for rel in tops + DATA_DIRS[kind]:
                 if self.dry:
-                    self.log("[dry-run] mkdir -p %s (mode 750)" % data)
-                    continue
-                if os.path.islink(str(data)):
-                    self.log("WARNING: %s is a symlink; leaving it and its target alone" % data)
-                    continue
-                data.mkdir(mode=DATA_DIR_MODE, parents=True, exist_ok=True)
-                secure_data_dir(data, chown_to=cuid if uid == 0 else None)
+                    self.log("[dry-run] secure %s (mode 750, no access for other users)" % (d / rel))
+            if self.dry:
+                continue
+            for top in tops:
+                # earlier installer versions could leave these world-writable
+                strip_other_write(d, top)
+            for rel in DATA_DIRS[kind]:
+                if not secure_data_dir(d, rel, chown_to=cuid if root_install else None):
+                    self.log("WARNING: %s is a symlink or not a folder; left it and its target alone" % (d / rel))
             web_user = container_user_override(kind, uid, gid)
             override = d / "docker-compose.override.yml"
             if offset or web_user:

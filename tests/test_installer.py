@@ -569,7 +569,69 @@ class PortOffsetTests(unittest.TestCase):
             self.assertEqual(target_dir.stat().st_mode & 0o777, 0o755)
             self.assertEqual(spring_target.stat().st_mode & 0o777, 0o755)
             self.assertTrue(os.path.islink(str(root / "spring" / "volumes")))
-            self.assertFalse(ki.secure_data_dir(root / "spring" / "volumes"))
+            self.assertFalse(ki.secure_data_dir(root / "spring", "volumes"))
+
+    @unittest.skipUnless(ki.SAFE_FS, "POSIX only")
+    def test_old_world_writable_install_is_repaired(self):
+        old_umask = os.umask(0)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                def setup(root):
+                    inst = root / "flask" / "instance"
+                    for sub in ("volumes", "uploads/default", "other"):
+                        (inst / sub).mkdir(parents=True, mode=0o777)
+                    (inst / "uploads" / "default" / "pic.png").write_text("x")
+                    os.chmod(inst / "uploads" / "default" / "pic.png", 0o666)
+                    for x in [inst] + list(inst.rglob("*")):
+                        os.chmod(x, 0o777 if x.is_dir() else 0o666)
+                    (root / "spring" / "volumes").mkdir(mode=0o777)
+                    os.chmod(root / "spring" / "volumes", 0o777)
+                root = self._prepare(tmp, setup)
+                inst = root / "flask" / "instance"
+                for x in [inst] + list(inst.rglob("*")) + [root / "spring" / "volumes"]:
+                    self.assertFalse(x.stat().st_mode & 0o002, "%s still world-writable" % x)
+                self.assertEqual((inst / "volumes").stat().st_mode & 0o777, ki.DATA_DIR_MODE)
+                self.assertEqual((inst / "other").stat().st_mode & 0o777, 0o775)  # only o+w removed
+        finally:
+            os.umask(old_umask)
+
+    @unittest.skipUnless(ki.SAFE_FS and sys.platform.startswith("linux"), "Linux only (/proc fd paths)")
+    def test_root_install_locks_then_chowns(self):
+        from unittest import mock
+        events = []
+        real_fchmod, real_fchown = os.fchmod, os.fchown
+
+        def where(fd):
+            return os.readlink("/proc/self/fd/%d" % fd)
+
+        def fchmod(fd, mode):
+            events.append(("chmod", where(fd), mode))
+            real_fchmod(fd, mode)
+
+        def fchown(fd, uid, gid):
+            events.append(("chown", where(fd), uid))
+            if uid == os.getuid():
+                real_fchown(fd, uid, gid)
+
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            target = Path(outside) / "x.db"
+            target.write_text("x")
+            os.chmod(target, 0o644)
+            vol = Path(tmp) / "instance" / "volumes"
+            vol.mkdir(parents=True)
+            (vol / "user_management.db").write_text("x")
+            os.symlink(str(target), str(vol / "evil.db"))
+            with mock.patch.object(ki.os, "geteuid", return_value=0), \
+                    mock.patch.object(ki.os, "fchmod", side_effect=fchmod), \
+                    mock.patch.object(ki.os, "fchown", side_effect=fchown):
+                self.assertTrue(ki.secure_data_dir(tmp, "instance/volumes", chown_to=os.getuid()))
+            top = [e for e in events if e[1] == str(vol)]
+            self.assertEqual(top[0], ("chmod", str(vol), 0o700))      # locked before walking
+            self.assertEqual(top[-1], ("chmod", str(vol), ki.DATA_DIR_MODE))
+            self.assertIn(("chown", str(vol / "user_management.db"), os.getuid()), events)
+            self.assertFalse(any(str(target) in e[1] or "evil" in e[1] for e in events))
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+            self.assertEqual((vol / "user_management.db").stat().st_mode & 0o777, 0o600)
 
     def test_container_user_override(self):
         self.assertIsNone(ki.container_user_override("flask", 1000, 1000))   # matches the image's appuser
