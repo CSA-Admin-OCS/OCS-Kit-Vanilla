@@ -765,6 +765,89 @@ class AnswerTests(unittest.TestCase):
         self.assertFalse(ki.website_warnings(good_answers(mode="production", domain="a.org", website_publish=True)))
 
 
+def assert_no_force_push(test, lines):
+    pushes = [l for l in lines if re.search(r"\$ git( -c \S+)* push\b", l)]
+    test.assertTrue(pushes, "expected a push")
+    for l in pushes:
+        test.assertNotRegex(l, r"(\s--force\S*|\s-f\b|\s\+\S*HEAD)", "force push: " + l)
+
+
+class PublishTests(unittest.TestCase):
+    """step_publish with a fake shell: no force-push, merge of the kit release, kit-only edits."""
+    cat = ki.validate_catalog(json.loads(json.dumps(FIXTURE)))
+
+    def run_publish(self, exists, merge_rc=0, config=CONFIG_YML):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        a = good_answers(install_dir=tmp.name, mode="production", domain="myschool.org",
+                         website_publish=True, github_owner="me", github_repo="site")
+        inst = ki.Installer(a, self.cat, repo_base="https://github.com/CSA-Admin-OCS", ref="v9.9.9")
+        site = inst.dirs["site"]
+        site.mkdir(parents=True)
+        (site / "_config.yml").write_text(config)
+        if exists:
+            (site / ".git").mkdir()
+        cmds = []
+
+        def sh(cmd, cwd=None, check=True, **kw):
+            line = "$ " + " ".join(str(c) for c in cmd)
+            cmds.append(line)
+            inst.lines.append(line)
+            if cmd[:3] == ["gh", "repo", "view"]:
+                forked = any("gh repo fork" in c for c in cmds)
+                return (0 if exists or forked else 1), ""
+            if cmd[:3] == ["gh", "api", "user"]:
+                return 0, "me"
+            if "merge" in cmd and "--abort" not in cmd:
+                if merge_rc and check:
+                    raise ki.InstallError("merge failed")
+                return merge_rc, ""
+            return 0, ""
+        inst.sh = sh
+        return inst, cmds, site
+
+    def test_new_fork_normal_push(self):
+        inst, cmds, site = self.run_publish(exists=False)
+        inst.step_publish()
+        self.assertTrue(any("gh repo fork" in c for c in cmds))
+        self.assertTrue(any("merge --no-edit" in c for c in cmds))
+        assert_no_force_push(self, cmds)
+        self.assertNotIn("checkout -B main FETCH_HEAD", "\n".join(cmds))
+        self.assertIn('title: "Test High"', (site / "_config.yml").read_text())  # new site: full config
+
+    def test_rerun_keeps_school_edits(self):
+        custom = CONFIG_YML.replace("title: Your School Coding", "title: Our Own Title")
+        inst, cmds, site = self.run_publish(exists=True, config=custom)
+        inst.step_publish()
+        self.assertFalse(any("gh repo fork" in c for c in cmds))
+        assert_no_force_push(self, cmds)
+        text = (site / "_config.yml").read_text()
+        self.assertIn("title: Our Own Title", text)                 # school's edit kept
+        self.assertIn('  name: "class"', text)                       # kit block updated
+        self.assertEqual((site / "CNAME").read_text(), "pages.myschool.org\n")
+
+    def test_merge_conflict_stops_before_push(self):
+        inst, cmds, _ = self.run_publish(exists=True, merge_rc=1)
+        with self.assertRaises(ki.InstallError) as cm:
+            inst.step_publish()
+        self.assertIn("git merge FETCH_HEAD", str(cm.exception))
+        self.assertTrue(any("merge --abort" in c for c in cmds))
+        self.assertFalse(any(" push" in c for c in cmds))
+
+    def test_unsafe_config_stops_before_push(self):
+        inst, cmds, _ = self.run_publish(exists=True, config=CONFIG_YML + "\nkit:\n  name: x\n")
+        with self.assertRaises(ki.InstallError) as cm:
+            inst.step_publish()
+        self.assertIn("Cannot safely edit", str(cm.exception))
+        self.assertFalse(any(" push" in c for c in cmds))
+        self.assertIsNone(ki.config_edit_problem(CONFIG_YML))
+        self.assertIn("inline", ki.config_edit_problem("kit: {name: x}\n"))
+
+    def test_source_never_force_pushes(self):
+        src = (ROOT / "ocs_kit_installer.py").read_text()
+        self.assertNotRegex(src, r"\"push\"[^\n]*\"(--force|-f|--force-with-lease)\"")
+
+
 class DryRunTests(unittest.TestCase):
     def test_publish_dry_run_commands(self):
         cat = ki.validate_catalog(json.loads(json.dumps(FIXTURE)))
@@ -782,9 +865,11 @@ class DryRunTests(unittest.TestCase):
                              "gh api -X POST repos/my-org/cs-site/pages -f build_type=workflow",
                              "cname=pages.myschool.org",
                              "gh workflow run jekyll-gh-pages.yml -R my-org/cs-site --ref main",
-                             "git push --force origin HEAD:main",
+                             "git merge --no-edit -m 'Merge OCS-in-a-Kit release v0.2.0' FETCH_HEAD",
+                             "git push origin HEAD:main",
                              "docker compose up -d --build"]:
                 self.assertIn(expected, log)
+            assert_no_force_push(self, inst.lines)
             self.assertIsNotNone(inst.summary["production"])
             self.assertIn("pages.myschool.org", [r["name"] for r in inst.summary["production"]["dns"]])
 

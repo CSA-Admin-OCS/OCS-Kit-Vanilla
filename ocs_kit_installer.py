@@ -1149,6 +1149,17 @@ def edit_config_yml(text, top=None, kit=None, backend=None):
     return "".join(lines)
 
 
+def config_edit_problem(text):
+    """Why a _config.yml can't be edited safely (None = fine): the editor needs exactly one
+    top-level `kit:` block written in block style."""
+    kits = [l for l in text.splitlines() if _key_match(l + "\n", "kit", 0)]
+    if len(kits) != 1:
+        return "it has %d top-level 'kit:' blocks (expected 1)" % len(kits)
+    if not re.match(r"^kit:\s*(#.*)?$", kits[0]):
+        return "the 'kit:' block is written inline; it must be an indented block"
+    return None
+
+
 def pages_config_settings(answers, overrides, target, owner="", repo=""):
     school = answers["school_name"]
     top = {"title": school, "description": "%s computer science pages" % school, "owner_name": school}
@@ -1901,13 +1912,22 @@ class Installer:
     def step_download_website(self):
         self.checkout("pages", self.dirs["pages"], managed_files=("_config.yml",))
 
-    def configure_pages_dir(self, d, target, owner="", repo=""):
+    def configure_pages_dir(self, d, target, owner="", repo="", kit_only=False):
+        """Write the kit settings into a Pages checkout's _config.yml. kit_only (re-runs on a
+        school's site): only the `kit:` block is touched, nothing the school may have customized."""
         cfg = d / "_config.yml"
         s = pages_config_settings(self.a, self.overrides, target, owner, repo)
+        if kit_only:
+            s["top"] = {}
         text = self.read(cfg, "" if self.dry else None)
         if self.dry and not text:
-            self.log("[dry-run] edit %s: kit=%s features=%s" % (cfg, self.a["kit"], self.overrides))
+            self.log("[dry-run] edit %s: kit=%s features=%s%s" % (cfg, self.a["kit"], self.overrides,
+                                                                 " (kit block only)" if kit_only else ""))
             return
+        problem = config_edit_problem(text)
+        if problem:
+            raise InstallError("Cannot safely edit %s: %s. Nothing was pushed. Fix the file (one top-level "
+                               "'kit:' block) or set kit name/features by hand." % (cfg, problem))
         edits, unsupported = pages_setting_edits(self.feature_settings("pages"))
         for key in unsupported:
             self.results["warnings"].append("Website setting %s must be set by hand in _config.yml." % key)
@@ -2015,19 +2035,15 @@ class Installer:
             self.sh(["git", "checkout", "-B", "main", "origin/main"], cwd=site)
         else:
             self.sh(["gh", "repo", "clone", full, str(site)])
-        force = False
-        if created:
-            # Start the new site from the kit release, not whatever upstream's main is today.
-            self.sh(["git", "fetch", self.repo_url("pages") if not os.path.isdir(self.repo_base)
-                     else self.repo_url("pages"), self.ref_for("pages")], cwd=site)
-            self.sh(["git", "checkout", "-B", "main", "FETCH_HEAD"], cwd=site)
-            force = True
-        self.configure_pages_dir(site, "github", owner, repo)
+        # The school's main branch is never rewritten (no force-push): the kit release is merged
+        # into it, and on re-runs only the kit settings (_config.yml kit block, CNAME) change.
+        self.merge_kit_release(site, full)
+        self.configure_pages_dir(site, "github", owner, repo, kit_only=not created)
         files = ["_config.yml"]
         if not is_local(a):
             self.write(site / "CNAME", "pages.%s\n" % a["domain"])
             files.append("CNAME")
-        self.git_commit_push(site, files, "Configure OCS-in-a-Kit site (%s)" % a["kit"], force)
+        self.git_commit_push(site, files, "Configure OCS-in-a-Kit site (%s)" % a["kit"])
         self.sh(["gh", "api", "-X", "PUT", "repos/%s/actions/permissions" % full, "-F", "enabled=true",
                  "-f", "allowed_actions=all"])
         self.sh(["gh", "workflow", "enable", PAGES_WORKFLOW, "-R", full], check=False)
@@ -2048,18 +2064,42 @@ class Installer:
         self.results["urls"].append(("Website repository", "https://github.com/%s" % full))
         self.results["urls"].append(("Website build status", "https://github.com/%s/actions" % full))
 
-    def git_commit_push(self, d, files, message, force=False):
-        ident = []
-        if not self.dry:
-            _, name = self.sh(["git", "config", "user.name"], cwd=d, check=False, quiet=True)
-            if not name.strip():
-                ident = ["-c", "user.name=OCS Kit Installer", "-c",
-                         "user.email=%s" % (self.a.get("admin_email") or "ocs-kit@localhost")]
+    def git_ident(self, d):
+        if self.dry:
+            return []
+        _, name = self.sh(["git", "config", "user.name"], cwd=d, check=False, quiet=True)
+        if name.strip():
+            return []
+        return ["-c", "user.name=OCS Kit Installer", "-c",
+                "user.email=%s" % (self.a.get("admin_email") or "ocs-kit@localhost")]
+
+    def merge_kit_release(self, site, full):
+        """Merge the kit release (self.ref of OCS-Kit-Pages) into the site's main branch. A merge,
+        never a reset or force-push, so the school's own edits are kept. Stops on conflicts."""
+        ref = self.ref_for("pages")
+        src = self.repo_url("pages")
+        self.sh(["git", "fetch", src, ref], cwd=site)
+        rc, _ = self.sh(["git"] + self.git_ident(site) + ["merge", "--no-edit", "-m",
+                        "Merge OCS-in-a-Kit release %s" % ref, "FETCH_HEAD"], cwd=site, check=False)
+        if rc != 0:
+            self.sh(["git", "merge", "--abort"], cwd=site, check=False)
+            raise InstallError(
+                "The kit release %s conflicts with changes made in %s, so nothing was pushed and "
+                "your site is unchanged. Merge it by hand, then re-run the installer:\n"
+                "  cd %s\n  git fetch %s %s\n  git merge FETCH_HEAD   # resolve the conflicts, commit\n"
+                "  git push origin HEAD:main" % (ref, full, shlex.quote(str(site)), src, ref))
+
+    def git_commit_push(self, d, files, message):
+        """Commit the given files and push normally. Never force-pushes."""
         self.sh(["git", "add"] + files, cwd=d)
-        rc, _ = self.sh(["git"] + ident + ["commit", "-m", message], cwd=d, check=False)
+        rc, _ = self.sh(["git"] + self.git_ident(d) + ["commit", "-m", message], cwd=d, check=False)
         if rc != 0:
             self.log("(no changes to commit)")
-        self.sh(["git", "push"] + (["--force"] if force else []) + ["origin", "HEAD:main"], cwd=d)
+        rc, out = self.sh(["git", "push", "origin", "HEAD:main"], cwd=d, check=False)
+        if rc != 0:
+            raise InstallError("GitHub refused the push (main changed on GitHub meanwhile?). Nothing was "
+                               "overwritten. Re-run the installer to apply the kit settings on top of the "
+                               "latest version.\n" + "\n".join(out.splitlines()[-5:]))
 
     # -- production -------------------------------------------------------
     def step_nginx(self):
@@ -2104,6 +2144,9 @@ class Installer:
         if (site / "_config.yml").exists():
             touched = True
             self.sh(["git", "pull", "--ff-only", "origin", "main"], cwd=site, check=False)
+            problem = config_edit_problem(self.read(site / "_config.yml"))
+            if problem:
+                raise InstallError("Cannot safely edit %s: %s. Nothing was pushed." % (site / "_config.yml", problem))
             self.write(site / "_config.yml", edit_config_yml(self.read(site / "_config.yml"), kit=kit_vals))
             self.git_commit_push(site, ["_config.yml"], "Change kit to %s" % describe_selection(
                 self.catalog, a["kit"], self.overrides))

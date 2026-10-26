@@ -156,6 +156,12 @@ re-run pre-fills everything:
   ./install.sh --change-features --kit education --features +finance-sim,-hallpass
   ```
 
+Your published website repository is never overwritten (no force-push). On a re-run the installer
+merges the selected kit release into your site's `main` (`git fetch <OCS-Kit-Pages> <ref>` +
+`git merge FETCH_HEAD`), changes only the `kit:` block of `_config.yml` and `CNAME`, and pushes
+normally. If the merge conflicts with your own edits, or `_config.yml` can't be edited safely,
+it stops before pushing and prints the commands to merge by hand.
+
 Seed passwords and account names only apply when a backend creates a new, empty database.
 
 ## What ends up in the install folder
