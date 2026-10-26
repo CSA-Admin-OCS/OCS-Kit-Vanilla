@@ -8,29 +8,32 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 REDACTED = "REDACTED"
 
-# query parameter names whose values are secrets (exact name, or ending in _<name> / -<name>)
-_SECRET_PARAM = re.compile(
-    r"(?i)^(?:.*[_\-.])?(token|access_token|private_token|id_token|refresh_token|key|api_key|apikey|"
-    r"password|passwd|pwd|pass|secret|client_secret|sig|signature|auth|credentials?)$")
+# query parameter names whose values are secrets: unanchored, case-insensitive substring match
+# (accessToken, X-Api-Key, authorization, client_secret_v2, sessionid, ...). Over-redacting is fine.
+_SECRET_PARAM = re.compile(r"(?i)(token|secret|passw|pwd|key|sig|auth|credential|session|cookie|bearer)")
 
 _SCHEME = r"[A-Za-z][A-Za-z0-9+.\-]*://"
-# a URL token in text: scheme:// then anything up to whitespace, a quote, an angle bracket, a
-# backtick, or the start of the next URL (so "a://x,b://y" yields two tokens)
-_URL_IN_TEXT = re.compile(r"%s(?:(?!%s)[^\s'\"<>`])+" % (_SCHEME, _SCHEME))
+# whitespace/quote/angle-bracket separated tokens (linear); '()[]' are not separators so a query
+# after a parenthesis in a path stays attached to its URL
+_TOKEN = re.compile(r"[^\s'\"<>`]+")
+# scheme starts inside a token; the lookbehind keeps each scan position O(1) for long letter runs
+_SCHEME_START = re.compile(r"(?<![A-Za-z0-9+.\-])" + _SCHEME)
 # scp-like ssh syntax in text: user@host:path, where path has a '/' or ends in .git
 _SCP_IN_TEXT = re.compile(r"(?<![\w.@\-/])[\w.\-]+@[\w\-]+(?:\.[\w\-]+)*:(?:[\w.~\-]+/[\w./~\-]*|[\w.~\-]+\.git)\b/?")
 _SCP = re.compile(r"^[^@/\s]+@([^:/\s]+):(.*)$")
 # trailing punctuation that belongs to the sentence, not the URL
 _TRAILING = ".,;:!?)]}>'\"`"
+# longest URL piece parsed; anything longer is cut (and marked) rather than parsed
+MAX_URL = 8192
 
 
 def _redact_query(query):
     if not query:
         return query
     pairs = parse_qsl(query, keep_blank_values=True)
-    if not any(_SECRET_PARAM.match(k) for k, _ in pairs):
+    if not any(_SECRET_PARAM.search(k) for k, _ in pairs):
         return query
-    return urlencode([(k, REDACTED if _SECRET_PARAM.match(k) else v) for k, v in pairs], safe="/:")
+    return urlencode([(k, REDACTED if _SECRET_PARAM.search(k) else v) for k, v in pairs], safe="/:")
 
 
 def redact_url(url):
@@ -66,17 +69,37 @@ def redact_url(url):
     return out
 
 
+def _redact_piece(piece):
+    if "@" not in piece and "?" not in piece:
+        return piece  # no userinfo and no query: nothing to redact (keeps long inputs fast)
+    core = piece.rstrip(_TRAILING)
+    tail = piece[len(core):]
+    if len(core) > MAX_URL:
+        return redact_url(core[:MAX_URL]) + "...[truncated]"
+    return redact_url(core) + tail
+
+
 def _redact_token(tok):
-    core = tok.rstrip(_TRAILING)
-    return redact_url(core) + tok[len(core):]
+    if "://" not in tok:
+        return tok
+    starts = [m.start() for m in _SCHEME_START.finditer(tok)]
+    if not starts:
+        return tok
+    out = [tok[:starts[0]]]
+    for i, a in enumerate(starts):
+        b = starts[i + 1] if i + 1 < len(starts) else len(tok)
+        out.append(_redact_piece(tok[a:b]))
+    return "".join(out)
 
 
 def redact_text(text):
-    """Redact every URL (scheme:// and scp-like user@host:path) inside arbitrary text."""
+    """Redact every URL (scheme:// and scp-like user@host:path) inside arbitrary text. Linear time."""
     if not text:
         return text
-    text = _URL_IN_TEXT.sub(lambda m: _redact_token(m.group(0)), str(text))
-    return _SCP_IN_TEXT.sub(lambda m: redact_url(m.group(0)), text)
+    text = _TOKEN.sub(lambda m: _redact_token(m.group(0)), str(text))
+    if "@" in text:
+        text = _SCP_IN_TEXT.sub(lambda m: redact_url(m.group(0)), text)
+    return text
 
 
 def has_credentials(url):

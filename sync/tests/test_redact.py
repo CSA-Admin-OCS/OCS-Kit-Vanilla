@@ -80,7 +80,31 @@ class RedactTextTest(unittest.TestCase):
                     self.assertIn("=REDACTED", out)
         # ordinary parameters are left alone
         self.assertEqual(redact_url("https://h/x?ref=main&page=2"), "https://h/x?ref=main&page=2")
-        self.assertEqual(redact_url("https://h/x?monkey=1"), "https://h/x?monkey=1")
+
+    def test_camelcase_and_header_style_params(self):
+        for name in ("accessToken", "githubToken", "X-Api-Key", "authorization", "client_secret_v2", "sessionid",
+                     "PRIVATE-TOKEN", "bearer", "cookie", "x-amz-security-token", "Passwd"):
+            with self.subTest(name=name):
+                url = "https://h.example.com/r?%s=%s&page=2" % (name, TOKEN)
+                for out in (redact_url(url), redact_text("GET %s 200" % url)):
+                    self.assertNotIn(TOKEN, out)
+                    self.assertIn("page=2", out)
+
+    def test_linear_time_on_adversarial_input(self):
+        import time
+        for text in ("a://" * 50000, "x" * 200000, "https://" + "a" * 200000, "a@" * 100000,
+                     ("https://u:p@h/" + "?" * 10) * 10000, "a:" * 100000 + "//", "." * 200000):
+            with self.subTest(text=text[:12]):
+                t = time.time()
+                redact_text(text)
+                redact_url(text)
+                self.assertLess(time.time() - t, 0.5)
+
+    def test_long_url_is_capped(self):
+        url = "https://u:%s@h.com/" % TOKEN + "a" * 20000 + "?token=" + TOKEN
+        out = redact_text("x " + url)
+        self.assertNotIn(TOKEN, out)
+        self.assertTrue(out.endswith("...[truncated]"))
 
     def test_multiple_urls_one_line(self):
         line = ("from https://a:%s@github.com/o/a.git and https://github.com/o/b.git,"
