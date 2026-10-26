@@ -507,7 +507,8 @@ class PortOffsetTests(unittest.TestCase):
             ki.Installer(good_answers(install_dir=tmp), cat).prepare_backend_dirs()
             override = root / "flask" / "docker-compose.override.yml"
             if ki.container_user_override("flask", os.getuid(), os.getgid()):
-                self.assertNotIn("ports", override.read_text())
+                self.assertNotIn("ports", override.read_text())      # only the user mapping is left
+                self.assertIn("USER %d:%d" % (os.getuid(), os.getgid()), override.read_text())
             else:
                 self.assertFalse(override.exists())
 
@@ -591,58 +592,67 @@ class PortOffsetTests(unittest.TestCase):
                 for x in [inst] + list(inst.rglob("*")) + [root / "spring" / "volumes"]:
                     self.assertFalse(x.stat().st_mode & 0o002, "%s still world-writable" % x)
                 self.assertEqual((inst / "volumes").stat().st_mode & 0o777, ki.DATA_DIR_MODE)
-                self.assertEqual((inst / "other").stat().st_mode & 0o777, 0o775)  # only o+w removed
+                self.assertEqual((inst / "other").stat().st_mode & 0o777, 0o755)  # only g+w/o+w removed
         finally:
             os.umask(old_umask)
 
-    @unittest.skipUnless(ki.SAFE_FS and sys.platform.startswith("linux"), "Linux only (/proc fd paths)")
-    def test_root_install_locks_then_chowns(self):
-        from unittest import mock
-        events = []
-        real_fchmod, real_fchown = os.fchmod, os.fchown
-
-        def where(fd):
-            return os.readlink("/proc/self/fd/%d" % fd)
-
-        def fchmod(fd, mode):
-            events.append(("chmod", where(fd), mode))
-            real_fchmod(fd, mode)
-
-        def fchown(fd, uid, gid):
-            events.append(("chown", where(fd), uid))
-            if uid == os.getuid():
-                real_fchown(fd, uid, gid)
-
+    @unittest.skipUnless(ki.SAFE_FS, "POSIX only")
+    def test_hardlinked_files_are_skipped(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
-            target = Path(outside) / "x.db"
+            target = Path(outside) / "shadow.db"
             target.write_text("x")
-            os.chmod(target, 0o644)
-            vol = Path(tmp) / "instance" / "volumes"
-            vol.mkdir(parents=True)
-            (vol / "user_management.db").write_text("x")
-            os.symlink(str(target), str(vol / "evil.db"))
-            with mock.patch.object(ki.os, "geteuid", return_value=0), \
-                    mock.patch.object(ki.os, "fchmod", side_effect=fchmod), \
-                    mock.patch.object(ki.os, "fchown", side_effect=fchown):
-                self.assertTrue(ki.secure_data_dir(tmp, "instance/volumes", chown_to=os.getuid()))
-            top = [e for e in events if e[1] == str(vol)]
-            self.assertEqual(top[0], ("chmod", str(vol), 0o700))      # locked before walking
-            self.assertEqual(top[-1], ("chmod", str(vol), ki.DATA_DIR_MODE))
-            self.assertIn(("chown", str(vol / "user_management.db"), os.getuid()), events)
-            self.assertFalse(any(str(target) in e[1] or "evil" in e[1] for e in events))
-            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
-            self.assertEqual((vol / "user_management.db").stat().st_mode & 0o777, 0o600)
+            os.chmod(target, 0o666)
+
+            def setup(root):
+                vol = root / "flask" / "instance" / "volumes"
+                vol.mkdir(parents=True)
+                os.link(str(target), str(vol / "linked.db"))
+            self._prepare(tmp, setup)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o666)
+
+    def test_refuses_root(self):
+        from unittest import mock
+        if os.name == "nt" or not hasattr(os, "geteuid"):
+            self.skipTest("no root check on Windows")
+        with mock.patch.object(ki.os, "geteuid", return_value=0):
+            self.assertEqual(ki.root_refusal(False), ki.ROOT_MESSAGE)
+            self.assertIsNone(ki.root_refusal(True))           # --dry-run is allowed
+            err = __import__("io").StringIO()
+            with mock.patch.object(sys, "stderr", err):
+                self.assertEqual(ki.main(["--cli"]), 2)
+            self.assertIn("sudo usermod -aG docker $USER", err.getvalue())
+        with mock.patch.object(ki.os, "geteuid", return_value=1000):
+            self.assertIsNone(ki.root_refusal(False))
+
+    def test_installer_never_changes_ownership(self):
+        src = (ROOT / "ocs_kit_installer.py").read_text()
+        self.assertIsNone(re.search(r"\bos\.(l|f)?chown\s*\(|\bshutil\.chown\s*\(", src),
+                          "the installer must never change ownership")
+
+    def test_foreign_owned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "volumes").mkdir()
+            (Path(tmp) / "volumes" / "sqlite.db").write_text("x")
+            me = os.getuid() if hasattr(os, "getuid") else 0
+            self.assertEqual(ki.foreign_owned(tmp, ["volumes"], me), [])
+            self.assertEqual(len(ki.foreign_owned(tmp, ["volumes"], me + 1)), 2)
 
     def test_container_user_override(self):
-        self.assertIsNone(ki.container_user_override("flask", 1000, 1000))   # matches the image's appuser
-        self.assertIsNone(ki.container_user_override("flask", 0, 0))         # root: data is chowned instead
-        self.assertIsNone(ki.container_user_override("spring", 1001, 1001))  # spring runs as root in its image
+        self.assertIsNone(ki.container_user_override("flask", 0, 0))
+        self.assertIsNone(ki.container_user_override("flask", None, None))
         if sys.platform.startswith("linux"):
-            self.assertEqual(ki.container_user_override("flask", 1001, 1002), "1001:1002")
-            o = ki.render_compose_override("flask", 0, "1001:1002")
-            self.assertIn('  web:\n    user: "1001:1002"', o)
+            self.assertEqual(ki.container_user_override("flask", 1000, 1000), "1000:1000")
+            self.assertEqual(ki.container_user_override("spring", 1001, 1002), "1001:1002")
+            o = ki.render_compose_override("spring", 0, "1001:1002")
+            self.assertIn("  web:\n    image: ocskit_spring_web\n    build:\n      context: .\n"
+                          "      dockerfile_inline: |\n        FROM ocskit_spring_base\n", o)
+            self.assertIn("        USER 1001:1002\n", o)
             self.assertNotIn("ports", o)
-            self.assertNotIn("image:", o)
+            self.assertNotIn("code_runner", o)
+            both = ki.render_compose_override("flask", 5, "1001:1002")
+            self.assertIn("FROM ocskit_flask_base_5", both)
+            self.assertIn('ports: !override\n      - "8592:8587"', both)
+            self.assertIn("image: ocskit_flask_socketio", both)
 
 
 class NginxTests(unittest.TestCase):

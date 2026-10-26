@@ -42,6 +42,12 @@ The installer needs only Python 3.8+ (no extra packages). It asks a few question
 
 The installer's **Check** page tests all of this and shows how to fix anything missing.
 
+Run the installer as your **normal user**, not with `sudo` (it refuses to run as root). To use
+Docker without sudo on Linux: `sudo usermod -aG docker $USER`, then log out and back in. On Linux
+the backend containers run as your user (via `docker-compose.override.yml`), so their databases
+in `flask/instance/` and `spring/volumes/` belong to you; those folders are closed to other users
+of the machine (no group write, nothing for others, database files owner-only).
+
 ## Run it
 
 ```bash

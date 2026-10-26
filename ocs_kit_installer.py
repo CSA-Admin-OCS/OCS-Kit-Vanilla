@@ -718,11 +718,13 @@ def host_ports(answers):
             "chat": SPRING_CHAT_PORT + o}
 
 
-# Bind-mounted data folder of each backend (relative to its checkout) and the uid its web
-# container runs as (None = root inside the image).
+# Folders each backend's web container writes (bind mounts, relative to its checkout). The web
+# containers run as the installing user's uid:gid (compose override), so these stay owned by
+# that user and no ownership changes are ever needed.
 DATA_DIRS = {"flask": ["instance/volumes", "instance/uploads", "instance/data"], "spring": ["volumes"]}
-CONTAINER_UID = {"flask": 1000, "spring": None}
 DATA_DIR_MODE = 0o750
+ROOT_MESSAGE = ("Run the installer as your normal user; add it to the docker group "
+                "(sudo usermod -aG docker $USER, then log out/in) instead of using sudo.")
 
 
 def _euid():
@@ -755,28 +757,30 @@ def _open_dir_nofollow(base, rel_parts=(), create_mode=None):
         raise
 
 
-def _fix_fd(fd, new_mode, allowed, chown_to):
-    """chown/chmod through an already-open fd (never a path that could be swapped)."""
+def _fix_fd(fd, remove, me):
+    """Remove the permission bits `remove` through an already-open fd (never a path that could be
+    swapped). Only entries owned by this user; regular files with more than one hard link are
+    skipped (the other link may live outside the install folder). Never adds bits."""
     st = os.fstat(fd)
-    if st.st_uid not in allowed:
+    if st.st_uid != me or (stat.S_ISREG(st.st_mode) and st.st_nlink > 1):
         return
-    if chown_to is not None:
-        os.fchown(fd, chown_to, chown_to)
     mode = stat.S_IMODE(st.st_mode)
-    new = new_mode(st, mode)
-    if new != mode:
-        os.fchmod(fd, new)
+    if mode & remove:
+        os.fchmod(fd, mode & ~remove)
 
 
-def _fix_entry(name, dir_fd, new_mode, allowed, chown_to):
-    """Fix one directory entry: lstat it, skip symlinks/other types/foreign owners, then open it
-    with O_NOFOLLOW, check it is still the same inode and change it through the fd."""
+def _fix_entry(name, dir_fd, remove_for, me):
+    """lstat one entry, skip symlinks/other types/foreign owners/hard-linked files, then open it
+    with O_NOFOLLOW, check it is still the same inode and change it through the fd.
+    remove_for(name, is_dir) gives the bits to remove."""
     try:
         st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except OSError:
         return
     is_dir = stat.S_ISDIR(st.st_mode)
-    if stat.S_ISLNK(st.st_mode) or not (is_dir or stat.S_ISREG(st.st_mode)) or st.st_uid not in allowed:
+    if stat.S_ISLNK(st.st_mode) or not (is_dir or stat.S_ISREG(st.st_mode)) or st.st_uid != me:
+        return
+    if not is_dir and st.st_nlink > 1:
         return
     flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | (getattr(os, "O_DIRECTORY", 0) if is_dir else 0)
     try:
@@ -786,103 +790,140 @@ def _fix_entry(name, dir_fd, new_mode, allowed, chown_to):
     try:
         st2 = os.fstat(fd)
         if (st2.st_dev, st2.st_ino) == (st.st_dev, st.st_ino):
-            _fix_fd(fd, new_mode, allowed, chown_to)
+            _fix_fd(fd, remove_for(name, is_dir), me)
     except OSError:
         pass
     finally:
         os.close(fd)
 
 
-def _fix_tree(fd, new_mode, allowed, chown_to):
+def _fix_tree(fd, remove_for, me):
     for _root, dirs, files, rfd in os.fwalk(".", dir_fd=fd, follow_symlinks=False):
         for name in dirs + files:
-            _fix_entry(name, rfd, new_mode, allowed, chown_to)
+            _fix_entry(name, rfd, remove_for, me)
 
 
-def secure_data_dir(checkout, rel, chown_to=None):
-    """Create and close one backend data folder (checkout/rel) to other local users: it holds the
-    databases with password hashes and student data. The folder ends at 0o750, nothing below it
-    keeps 'other' permissions and database files get 0o600.
+def _is_db_file(name):
+    return name.endswith((".db", ".sqlite")) or ".db-" in name  # incl. sqlite -wal/-shm files
+
+
+def _data_remove(name, is_dir):
+    """Bits removed inside data folders: group write and everything for 'other'; database files
+    keep owner access only."""
+    return 0o077 if (not is_dir and _is_db_file(name)) else 0o027
+
+
+def secure_data_dir(checkout, rel):
+    """Create checkout/rel if needed and close it to other local users: it holds the databases
+    with password hashes and student data. Permission changes only remove bits: no group write,
+    nothing for 'other' (the folder ends at 0o750 or stricter), database files owner-only.
 
     Race-free: every path component is opened with O_NOFOLLOW, the tree is walked with dir fds
     (os.fwalk, follow_symlinks=False), symlinks are skipped and every change goes through an fd
-    of the verified inode. Only entries owned by this user (as root: root or chown_to) change.
-    As root the folder is first locked to 0o700, then handed to chown_to.
+    of the verified inode. Only entries owned by the current user change; hard-linked regular
+    files are skipped. Ownership is never changed.
     Returns False when the folder could not be opened safely (e.g. it is a symlink)."""
     if not SAFE_FS:
         Path(checkout, rel).mkdir(parents=True, exist_ok=True)  # Windows: no POSIX modes to fix
         return True
-    euid = _euid()
-    as_root = euid == 0
-    allowed = ({0} | ({chown_to} if chown_to is not None else set())) if as_root else {euid}
-    chown = chown_to if as_root else None
+    me = _euid()
     try:
         fd = _open_dir_nofollow(checkout, Path(rel).parts, create_mode=DATA_DIR_MODE)
     except OSError:
         return False
     try:
-        if as_root and os.fstat(fd).st_uid in allowed:
-            os.fchmod(fd, 0o700)
-        _fix_tree(fd, lambda st, mode: mode & ~0o007, allowed, chown)
-        _fix_dbs(fd, allowed)
-        _fix_fd(fd, lambda st, mode: DATA_DIR_MODE, allowed, chown)
+        _fix_tree(fd, _data_remove, me)
+        _fix_fd(fd, 0o027, me)
     finally:
         os.close(fd)
     return True
 
 
-def _fix_dbs(fd, allowed):
-    """Database files (*.db, *.sqlite) -> 0o600."""
-    for _root, _dirs, files, rfd in os.fwalk(".", dir_fd=fd, follow_symlinks=False):
-        for name in files:
-            if name.endswith((".db", ".sqlite")):
-                _fix_entry(name, rfd, lambda st, mode: 0o600, allowed, None)
-
-
 def strip_other_write(checkout, rel):
-    """Remove the 'other' write bit from checkout/rel and everything below it (repairs installs
+    """Remove group/other write bits from checkout/rel and everything below it (repairs installs
     made by an older installer that left data folders world-writable). Same safe walk."""
     if not SAFE_FS:
         return True
-    euid = _euid()
-    allowed = ({0} | {u for u in CONTAINER_UID.values() if u}) if euid == 0 else {euid}
+    me = _euid()
     try:
         fd = _open_dir_nofollow(checkout, Path(rel).parts)
     except OSError:
         return False
     try:
-        _fix_tree(fd, lambda st, mode: mode & ~0o002, allowed, None)
-        _fix_fd(fd, lambda st, mode: mode & ~0o002, allowed, None)
+        _fix_tree(fd, lambda name, is_dir: 0o022, me)
+        _fix_fd(fd, 0o022, me)
     finally:
         os.close(fd)
     return True
 
 
+def foreign_owned(checkout, rels, uid):
+    """Paths under the data folders not owned by uid (lstat only, symlinks not followed),
+    e.g. a database an older version created as root. Empty list = all ours."""
+    out = []
+    if uid is None:
+        return out
+    for rel in rels:
+        top = os.path.join(str(checkout), rel)
+        if not os.path.isdir(top) or os.path.islink(top):
+            continue
+        for root, dirs, files in os.walk(top, followlinks=False):
+            for p in [root] + [os.path.join(root, n) for n in dirs + files]:
+                try:
+                    if os.lstat(p).st_uid != uid:
+                        out.append(p)
+                except OSError:
+                    pass
+    return out
+
+
+def root_refusal(dry_run):
+    """Message when the installer must not run (as root, outside --dry-run), else None."""
+    if os.name == "nt" or not hasattr(os, "geteuid") or dry_run:
+        return None
+    return ROOT_MESSAGE if os.geteuid() == 0 else None
+
+
 def container_user_override(kind, uid, gid):
-    """'uid:gid' to run the web container as, when the image's fixed non-root uid would not match
-    the owner of the bind-mounted data folder (Linux only; Docker Desktop maps ownership itself)."""
-    cuid = CONTAINER_UID.get(kind)
-    if not cuid or uid is None or uid in (0, cuid) or not sys.platform.startswith("linux"):
+    """'uid:gid' the web container runs as, so files it writes into the bind-mounted data folders
+    belong to the installing user (Linux; Docker Desktop on macOS/Windows maps ownership itself)."""
+    if uid is None or gid is None or uid == 0 or not sys.platform.startswith("linux"):
         return None
     return "%d:%d" % (uid, gid)
 
 
+def base_image_name(kind, offset=0):
+    """Image built from the backend repo's own Dockerfile; the web image is derived from it."""
+    return "ocskit_%s_base%s" % (kind, ("_%d" % offset) if offset else "")
+
+
+def web_dockerfile(kind, offset, web_user):
+    """Inline Dockerfile for the web service: the repo's image, with /app owned by and running as
+    the installing user (both backends write into their working directory /app)."""
+    return "\n".join(["FROM %s" % base_image_name(kind, offset), "USER root",
+                      "RUN chown -R %s /app" % web_user, "USER %s" % web_user, "ENV HOME=/tmp", ""])
+
+
 def render_compose_override(kind, offset, web_user=None):
-    """docker-compose.override.yml: with an offset, remap host ports (+offset) and use separate
-    image names so a second copy can run next to an existing one (Compose 2.24+ for !override);
-    with web_user, run the web service as that uid:gid."""
+    """docker-compose.override.yml. With an offset: host ports +offset and separate image names,
+    so a second copy can run next to an existing one (Compose 2.24+ for !override). With web_user
+    (Linux): the web service is built from base_image_name() + web_dockerfile(), so it runs as
+    that uid:gid and the files it writes into the bind-mounted data folders belong to that user
+    (no ownership changes on the host)."""
     lines = ["# Written by the OCS-in-a-Kit installer. Re-run the installer to change it.", "services:"]
     for svc, ports in COMPOSE_SERVICES[kind].items():
         body = []
-        if offset:
+        if svc == "web" and web_user:
+            body.append("    image: ocskit_%s_web%s" % (kind, ("_%d" % offset) if offset else ""))
+            body.append("    build:")
+            body.append("      context: .")
+            body.append("      dockerfile_inline: |")
+            body += ["        " + l for l in web_dockerfile(kind, offset, web_user).splitlines()]
+        elif offset:
             body.append("    image: ocskit_%s_%s" % (kind, svc))
-            if ports:
-                body.append("    ports: !override")
-                body += ['      - "%d:%d"' % (p + offset, p) for p in ports]
-        if web_user and svc == "web":
-            body.append('    user: "%s"' % web_user)
-            body.append("    environment:")
-            body.append("      HOME: /tmp")
+        if offset and ports:
+            body.append("    ports: !override")
+            body += ['      - "%d:%d"' % (p + offset, p) for p in ports]
         if body:
             lines.append("  %s:" % svc)
             lines += body
@@ -1444,6 +1485,7 @@ class Installer:
         self.overrides = normalize_overrides(catalog, answers["kit"], answers.get("features"))
         self.roles = kit_roles_map(catalog, answers["kit"])
         self.ports = host_ports(answers)
+        self.web_users = {}
         self.root = Path(os.path.expanduser(answers["install_dir"])).resolve()
         self.dirs = {"flask": self.root / "flask", "spring": self.root / "spring",
                      "pages": self.root / "pages", "site": self.root / "github-site",
@@ -1683,10 +1725,8 @@ class Installer:
         offset = int(self.a.get("port_offset") or 0)
         uid = os.getuid() if hasattr(os, "getuid") else None
         gid = os.getgid() if hasattr(os, "getgid") else None
-        root_install = _euid() == 0
         for kind in ("flask", "spring"):
             d = self.dirs[kind]
-            cuid = CONTAINER_UID.get(kind)
             tops = list(dict.fromkeys(Path(rel).parts[0] for rel in DATA_DIRS[kind]))
             for rel in tops + DATA_DIRS[kind]:
                 if self.dry:
@@ -1697,9 +1737,22 @@ class Installer:
                 # earlier installer versions could leave these world-writable
                 strip_other_write(d, top)
             for rel in DATA_DIRS[kind]:
-                if not secure_data_dir(d, rel, chown_to=cuid if root_install else None):
+                if not secure_data_dir(d, rel):
                     self.log("WARNING: %s is a symlink or not a folder; left it and its target alone" % (d / rel))
             web_user = container_user_override(kind, uid, gid)
+            self.web_users[kind] = None
+            foreign = foreign_owned(d, DATA_DIRS[kind], uid) if (web_user and not self.dry) else []
+            if foreign:
+                web_user = None
+                msg = ("%s: %d file(s) in its data folder belong to another user (e.g. %s, written as "
+                       "root by an older version), so its container keeps its image's default user. To "
+                       "switch it to your user later: stop it, give those files to you "
+                       "(sudo chown -R %s %s), and re-run the installer."
+                       % (kind, len(foreign), foreign[0], "%d:%d" % (uid, gid),
+                          " ".join(shlex.quote(str(d / r)) for r in DATA_DIRS[kind])))
+                self.log("WARNING: " + msg)
+                self.results["warnings"].append(msg)
+            self.web_users[kind] = web_user
             override = d / "docker-compose.override.yml"
             if offset or web_user:
                 self.write(override, render_compose_override(kind, offset, web_user),
@@ -1756,6 +1809,10 @@ class Installer:
 
     def step_start(self, kind):
         self.log("Building can take several minutes the first time.")
+        if self.web_users.get(kind):
+            # base image from the repo's Dockerfile; the override derives the web image from it
+            self.sh(["docker", "build", "-t", base_image_name(kind, int(self.a.get("port_offset") or 0)),
+                     str(self.dirs[kind])])
         self.compose(kind, "up", "-d", "--build")
 
     def wait_http(self, url, timeout, what, on_timeout=None, ok_codes=(200,)):
@@ -3050,6 +3107,10 @@ def main(argv=None):
     if args.list_features:
         print(format_feature_list(catalog))
         return 0
+    refusal = root_refusal(args.dry_run)
+    if refusal:
+        print("Error: " + refusal, file=sys.stderr)
+        return 2
     try:
         answers, existing = initial_answers(args, catalog)
     except (OSError, ValueError) as exc:
