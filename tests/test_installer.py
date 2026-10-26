@@ -469,6 +469,45 @@ class InstallerConfigureTests(unittest.TestCase):
         self.assertEqual({f["feature"]: f["status"] for f in summary["features"]}["beta"], "needs-setup")
 
 
+class PortOffsetTests(unittest.TestCase):
+    def test_host_ports_and_override(self):
+        a = good_answers(port_offset=10000)
+        self.assertEqual(ki.host_ports(a), {"flask": 18587, "socket": 18500, "spring": 18585, "chat": 18589})
+        self.assertEqual(ki.host_ports(good_answers()), {"flask": 8587, "socket": 8500, "spring": 8585, "chat": 8589})
+        o = ki.render_compose_override("spring", 10000)
+        self.assertIn('ports: !override\n      - "18585:8585"\n      - "18589:8589"', o)
+        self.assertIn("image: ocskit_spring_code_runner", o)
+        f = ki.render_compose_override("flask", 10000)
+        self.assertIn('"18500:8500"', f)
+        self.assertIn("http://localhost:18585", ki.cors_origins(a, "spring"))
+        s = ki.pages_config_settings(a, [], "preview")
+        self.assertEqual(s["backend"]["flask_local"], "http://localhost:18587")
+        self.assertIn("preview_port", ki.validate_answers(good_answers(port_offset=10000, preview_port=18587),
+                                                          ki.validate_catalog(json.loads(json.dumps(FIXTURE)))))
+        self.assertIn("port_offset", ki.validate_answers(good_answers(port_offset=-5),
+                                                         ki.validate_catalog(json.loads(json.dumps(FIXTURE)))))
+
+    def test_nginx_with_offset(self):
+        out = ki.render_nginx_configs("proxy_pass http://localhost:${FLASK_PORT};",
+                                      "proxy_pass http://localhost:8585; proxy_pass http://localhost:8589;",
+                                      "x.org", ki.host_ports({"port_offset": 1}))
+        self.assertEqual(out["flask.conf"], "proxy_pass http://localhost:8588;")
+        self.assertEqual(out["spring.conf"], "proxy_pass http://localhost:8586; proxy_pass http://localhost:8590;")
+
+    def test_override_written_and_removed(self):
+        cat = ki.validate_catalog(json.loads(json.dumps(FIXTURE)))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for kind in ("flask", "spring"):
+                (root / kind).mkdir()
+            ki.Installer(good_answers(install_dir=tmp, port_offset=7), cat).prepare_backend_dirs()
+            self.assertTrue((root / "flask" / "instance" / "volumes").is_dir())
+            self.assertTrue((root / "spring" / "volumes").is_dir())
+            self.assertIn('"8594:8587"', (root / "flask" / "docker-compose.override.yml").read_text())
+            ki.Installer(good_answers(install_dir=tmp), cat).prepare_backend_dirs()
+            self.assertFalse((root / "flask" / "docker-compose.override.yml").exists())
+
+
 class NginxTests(unittest.TestCase):
     def test_render(self):
         flask_tpl = "server_name flask.${SITE_DOMAIN};\nproxy_pass http://localhost:${FLASK_PORT};\n" \

@@ -181,6 +181,7 @@ the preview runs in the `ocskit-pages-preview` container (`docker stop|start ocs
 | `--ref REF` | tag or branch (default the kit release; `main` = each repo's default branch) |
 | `--repo-base URL-or-DIR` | where the three repositories come from (for testing forks or local copies) |
 | `--preview-port N` | local website preview port (default 4500) |
+| `--port-offset N` | run next to another copy: backend host ports become default+N (e.g. 18587/18585) and images get separate names, via a generated `docker-compose.override.yml` (Compose 2.24+) |
 | `--dry-run` | print every command and file write without doing anything |
 | `--no-browser`, `--port N` | web page: don't open a browser / fixed port |
 

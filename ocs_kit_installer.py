@@ -60,6 +60,12 @@ SOCKET_PORT = 8500
 SPRING_PORT = 8585
 SPRING_CHAT_PORT = 8589
 DEFAULT_PREVIEW_PORT = 4500
+# Container ports per compose service (the backends' docker-compose.yml contract). With
+# --port-offset N the host ports become port+N (for running next to another copy).
+COMPOSE_SERVICES = {
+    "flask": {"web": [FLASK_PORT], "socketio": [SOCKET_PORT], "code_runner": []},
+    "spring": {"web": [SPRING_PORT, SPRING_CHAT_PORT], "code_runner": []},
+}
 
 ANSWERS_FILE = "ocs-kit-installer.json"
 CREDENTIALS_FILE = "CREDENTIALS.txt"
@@ -121,6 +127,7 @@ DEFAULT_ANSWERS = {
     "github_owner": "",
     "github_repo": "ocs-kit-pages",
     "preview_port": DEFAULT_PREVIEW_PORT,
+    "port_offset": 0,               # host ports = default + offset (side-by-side/testing installs)
 }
 
 UNSAFE_TEXT = re.compile(r"[$`\\\"'\r\n]")
@@ -703,6 +710,27 @@ def is_local(answers):
     return answers.get("mode") != "production"
 
 
+def host_ports(answers):
+    """Host ports of the backends for this install (default ports + port_offset)."""
+    o = int(answers.get("port_offset") or 0)
+    return {"flask": FLASK_PORT + o, "socket": SOCKET_PORT + o, "spring": SPRING_PORT + o,
+            "chat": SPRING_CHAT_PORT + o}
+
+
+def render_compose_override(kind, offset):
+    """docker-compose.override.yml remapping host ports (+offset) and using separate image names,
+    so a second copy can run next to an existing one. Needs Docker Compose 2.24+ (!override)."""
+    lines = ["# Written by the OCS-in-a-Kit installer (--port-offset %d). Delete it and run" % offset,
+             "# 'docker compose up -d --build' to go back to the default ports.", "services:"]
+    for svc, ports in COMPOSE_SERVICES[kind].items():
+        lines.append("  %s:" % svc)
+        lines.append("    image: ocskit_%s_%s" % (kind, svc))
+        if ports:
+            lines.append("    ports: !override")
+            lines += ['      - "%d:%d"' % (p + offset, p) for p in ports]
+    return "\n".join(lines) + "\n"
+
+
 def frontend_url(answers):
     if is_local(answers):
         return "http://localhost:%d" % int(answers.get("preview_port") or DEFAULT_PREVIEW_PORT)
@@ -723,7 +751,7 @@ def cors_origins(answers, kind):
                    "http://localhost:4500", "http://127.0.0.1:4500",
                    "http://localhost:4000", "http://127.0.0.1:4000"]
         if kind == "spring":
-            origins.append("http://localhost:%d" % SPRING_PORT)
+            origins.append("http://localhost:%d" % host_ports(answers)["spring"])
     else:
         origins = ["https://pages.%s" % answers["domain"]]
         if answers.get("github_owner"):
@@ -787,11 +815,16 @@ def render_template(text, variables):
                   lambda m: str(variables[m.group(1)]) if m.group(1) in variables else m.group(0), text)
 
 
-def render_nginx_configs(flask_template, spring_template, domain):
+def render_nginx_configs(flask_template, spring_template, domain, ports=None):
+    ports = ports or host_ports({})
+    spring = render_template(spring_template, {"SITE_DOMAIN": "spring." + domain})
+    if ports["spring"] != SPRING_PORT:  # the Spring template hard-codes its ports
+        spring = spring.replace("localhost:%d" % SPRING_PORT, "localhost:%d" % ports["spring"]) \
+                       .replace("localhost:%d" % SPRING_CHAT_PORT, "localhost:%d" % ports["chat"])
     return {
-        "flask.conf": render_template(flask_template, {"SITE_DOMAIN": domain, "FLASK_PORT": FLASK_PORT,
-                                                       "SOCKET_PORT": SOCKET_PORT}),
-        "spring.conf": render_template(spring_template, {"SITE_DOMAIN": "spring." + domain}),
+        "flask.conf": render_template(flask_template, {"SITE_DOMAIN": domain, "FLASK_PORT": ports["flask"],
+                                                       "SOCKET_PORT": ports["socket"]}),
+        "spring.conf": spring,
     }
 
 
@@ -924,8 +957,9 @@ def pages_config_settings(answers, overrides, target, owner="", repo=""):
         top["github_username"] = owner
         top["github_repo"] = repo
     kit = {"school_name": school, "name": answers["kit"], "features": list(overrides)}
-    backend = {"flask_local": "http://localhost:%d" % FLASK_PORT,
-               "spring_local": "http://localhost:%d" % SPRING_PORT}
+    hp = host_ports(answers)
+    backend = {"flask_local": "http://localhost:%d" % hp["flask"],
+               "spring_local": "http://localhost:%d" % hp["spring"]}
     if not is_local(answers):
         backend = {"flask": "https://flask.%s" % answers["domain"],
                    "spring": "https://spring.%s" % answers["domain"], **backend}
@@ -964,6 +998,10 @@ def normalize_answers(raw, defaults=None, env=None):
         a["preview_port"] = int(a.get("preview_port") or DEFAULT_PREVIEW_PORT)
     except (TypeError, ValueError):
         a["preview_port"] = -1
+    try:
+        a["port_offset"] = int(a.get("port_offset") or 0)
+    except (TypeError, ValueError):
+        a["port_offset"] = -1
     if not a["install_website"]:
         a["website_preview"] = a["website_publish"] = False
     raw_settings = a.get("settings") if isinstance(a.get("settings"), dict) else {}
@@ -997,6 +1035,9 @@ def validate_answers(a, catalog):
             err["features"] = str(exc)
     if not a.get("install_dir"):
         err["install_dir"] = "Choose a folder to install into."
+    off = a.get("port_offset", 0)
+    if not isinstance(off, int) or not 0 <= off <= 50000:
+        err["port_offset"] = "Port offset must be a number between 0 and 50000."
     if a.get("action") == "change-features":
         return err
     if not (a.get("install_backend") or a.get("install_website")):
@@ -1034,7 +1075,7 @@ def validate_answers(a, catalog):
             p = a.get("preview_port")
             if not isinstance(p, int) or not 1024 <= p <= 65535:
                 err["preview_port"] = "Port must be a number between 1024 and 65535."
-            elif p in (FLASK_PORT, SPRING_PORT, SOCKET_PORT, SPRING_CHAT_PORT):
+            elif p in host_ports(a).values():
                 err["preview_port"] = "That port is used by the backends."
     return err
 
@@ -1166,8 +1207,9 @@ def check_prerequisites(a, probe=_probe, port_check=port_in_use):
                 "engine " + dout if dok else "cannot talk to the Docker engine: " + (dout.splitlines() or [""])[-1])
             docker_ok = bool(cok and dok)
     if need_docker and a.get("action") != "change-features":
-        for port, what in ((FLASK_PORT, "Flask"), (SOCKET_PORT, "Flask socket"), (SPRING_PORT, "Spring"),
-                           (SPRING_CHAT_PORT, "Spring chat")):
+        hp = host_ports(a)
+        for port, what in ((hp["flask"], "Flask"), (hp["socket"], "Flask socket"), (hp["spring"], "Spring"),
+                           (hp["chat"], "Spring chat")):
             if port_check(port):
                 add("port-%d" % port, "Port %d (%s)" % (port, what), "warn",
                     "already in use: fine if it is an earlier OCS Kit install, otherwise stop that program",
@@ -1243,6 +1285,7 @@ class Installer:
         self.echo = echo
         self.overrides = normalize_overrides(catalog, answers["kit"], answers.get("features"))
         self.roles = kit_roles_map(catalog, answers["kit"])
+        self.ports = host_ports(answers)
         self.root = Path(os.path.expanduser(answers["install_dir"])).resolve()
         self.dirs = {"flask": self.root / "flask", "spring": self.root / "spring",
                      "pages": self.root / "pages", "site": self.root / "github-site",
@@ -1473,7 +1516,40 @@ class Installer:
             envs[kind] = parse_env(self.read(self.dirs[kind] / ".env", ""))
         return envs
 
+    def prepare_backend_dirs(self):
+        """Data folders the containers bind-mount, plus the port-offset compose override."""
+        offset = int(self.a.get("port_offset") or 0)
+        for kind, sub in (("flask", "instance/volumes"), ("spring", "volumes")):
+            d = self.dirs[kind]
+            data = d / sub
+            if self.dry:
+                self.log("[dry-run] mkdir -p %s" % data)
+            else:
+                # Create them as this user: if Docker creates a missing bind-mount source it is
+                # owned by root and the non-root app user in the container cannot write to it.
+                data.mkdir(parents=True, exist_ok=True)
+                if hasattr(os, "getuid") and os.getuid() != 1000 and sys.platform.startswith("linux"):
+                    # The Flask image runs as uid 1000; let it write the data folder.
+                    top = d / sub.split("/")[0]
+                    for root, dirs, _files in os.walk(top):
+                        for x in [root] + [os.path.join(root, n) for n in dirs]:
+                            try:
+                                os.chmod(x, 0o777)
+                            except OSError:
+                                pass
+            override = d / "docker-compose.override.yml"
+            if offset:
+                self.write(override, render_compose_override(kind, offset),
+                           describe="host ports +%d, separate image names" % offset)
+            elif override.exists() and "OCS-in-a-Kit installer" in self.read(override, ""):
+                if self.dry:
+                    self.log("[dry-run] remove %s" % override)
+                else:
+                    override.unlink()
+                    self.log("removed %s (back to default ports)" % override)
+
     def step_configure_backend(self):
+        self.prepare_backend_dirs()
         envs = self._existing_envs()
         shared = {}
         for key in ["RESET_TOKEN_SECRET"] + [k for _, k, _ in PASSWORD_FIELDS]:
@@ -1557,8 +1633,8 @@ class Installer:
         return logs
 
     def step_wait_backend(self):
-        self.wait_http("http://localhost:%d/login" % FLASK_PORT, 600, "Flask", self._compose_logs("flask"))
-        self.wait_http("http://localhost:%d/login" % SPRING_PORT, 900, "Spring", self._compose_logs("spring"))
+        self.wait_http("http://localhost:%d/login" % self.ports["flask"], 600, "Flask", self._compose_logs("flask"))
+        self.wait_http("http://localhost:%d/login" % self.ports["spring"], 900, "Spring", self._compose_logs("spring"))
 
     def http_json(self, method, url, body=None, headers=None):
         data = json.dumps(body).encode() if body is not None else None
@@ -1573,8 +1649,8 @@ class Installer:
             return 0, str(exc)
 
     def step_verify_backend(self):
-        checks = [("flask", "http://localhost:%d/api/authenticate" % FLASK_PORT, {"X-Origin": "client"}),
-                  ("spring", "http://localhost:%d/authenticate" % SPRING_PORT, {})]
+        checks = [("flask", "http://localhost:%d/api/authenticate" % self.ports["flask"], {"X-Origin": "client"}),
+                  ("spring", "http://localhost:%d/authenticate" % self.ports["spring"], {})]
         for kind, url, headers in checks:
             pw = (self.passwords.get(kind) or {}).get("ADMIN_PASSWORD") or ""
             uid = self.roles.get("admin", DEFAULT_ROLES["admin"])["seed_uid"]
@@ -1590,7 +1666,7 @@ class Installer:
                        % (kind, code))
                 self.log("WARNING: " + msg)
                 self.results["warnings"].append(msg)
-        for kind, port in (("flask", FLASK_PORT), ("spring", SPRING_PORT)):
+        for kind, port in (("flask", self.ports["flask"]), ("spring", self.ports["spring"])):
             if self.dry:
                 self.log("[dry-run] GET http://localhost:%d/api/kit" % port)
                 continue
@@ -1769,7 +1845,7 @@ class Installer:
         domain = self.a["domain"]
         ft = self.read(self.dirs["flask"] / "deploy" / "nginx.conf.template", "" if self.dry else None)
         st = self.read(self.dirs["spring"] / "deploy" / "nginx.conf.template", "" if self.dry else None)
-        for name, text in render_nginx_configs(ft, st, domain).items():
+        for name, text in render_nginx_configs(ft, st, domain, self.ports).items():
             self.write(self.dirs["nginx"] / name, text)
 
     # -- change features only ---------------------------------------------
@@ -1788,9 +1864,9 @@ class Installer:
                                                         (" + " + ", ".join(sorted(extra))) if extra else ""))
             self.compose(kind, "up", "-d", "--force-recreate")
         if (self.dirs["flask"] / ".env").exists():
-            self.wait_http("http://localhost:%d/login" % FLASK_PORT, 300, "Flask", self._compose_logs("flask"))
+            self.wait_http("http://localhost:%d/login" % self.ports["flask"], 300, "Flask", self._compose_logs("flask"))
         if (self.dirs["spring"] / ".env").exists():
-            self.wait_http("http://localhost:%d/login" % SPRING_PORT, 600, "Spring", self._compose_logs("spring"))
+            self.wait_http("http://localhost:%d/login" % self.ports["spring"], 600, "Spring", self._compose_logs("spring"))
         kit_vals = {"name": a["kit"], "features": list(self.overrides)}
         pedits, _ = pages_setting_edits(self.feature_settings("pages"))
         kit_vals.update(pedits["kit"])
@@ -1847,13 +1923,13 @@ class Installer:
 
     def backend_urls(self):
         if is_local(self.a):
-            return [("Flask admin", "http://localhost:%d/login" % FLASK_PORT),
-                    ("Spring admin", "http://localhost:%d/login" % SPRING_PORT)]
+            return [("Flask admin", "http://localhost:%d/login" % self.ports["flask"]),
+                    ("Spring admin", "http://localhost:%d/login" % self.ports["spring"])]
         d = self.a["domain"]
         return [("Flask admin (after DNS + nginx)", "https://flask.%s/login" % d),
                 ("Spring admin (after DNS + nginx)", "https://spring.%s/login" % d),
-                ("Flask on this server", "http://localhost:%d/login" % FLASK_PORT),
-                ("Spring on this server", "http://localhost:%d/login" % SPRING_PORT)]
+                ("Flask on this server", "http://localhost:%d/login" % self.ports["flask"]),
+                ("Spring on this server", "http://localhost:%d/login" % self.ports["spring"])]
 
     def credentials_text(self):
         out = ["OCS-in-a-Kit credentials - keep this file private.",
@@ -2747,6 +2823,8 @@ def parse_args(argv=None):
                                                       "'main' or 'master' = each repo's default branch")
     p.add_argument("--catalog", help="path to kits/catalog.json")
     p.add_argument("--preview-port", type=int, help="local website preview port (default 4500)")
+    p.add_argument("--port-offset", type=int, help="add N to every backend host port and use separate image "
+                                                   "names, to run next to another copy (testing)")
     p.add_argument("--port", type=int, default=0, help="port for the installer web page (default random)")
     p.add_argument("--no-browser", action="store_true", help="don't open a browser for the web wizard")
     p.add_argument("--dry-run", action="store_true", help="print every command and file write; execute nothing")
@@ -2775,6 +2853,8 @@ def initial_answers(args, catalog):
         merged["features"] = args.features
     if args.preview_port:
         merged["preview_port"] = args.preview_port
+    if args.port_offset is not None:
+        merged["port_offset"] = args.port_offset
     if args.change_features:
         merged["action"] = "change-features"
     elif not raw.get("action"):
@@ -2818,7 +2898,8 @@ def main(argv=None):
     if answers["action"] == "change-features" and existing:
         saved = load_saved_answers(answers["install_dir"]) or {}
         for k in ("install_backend", "install_website", "website_preview", "website_publish", "mode",
-                  "school_name", "admin_email", "domain", "github_owner", "github_repo", "preview_port"):
+                  "school_name", "admin_email", "domain", "github_owner", "github_repo", "preview_port",
+                  "port_offset"):
             if k in saved:
                 answers[k] = normalize_answers(dict(saved))[k]
 
