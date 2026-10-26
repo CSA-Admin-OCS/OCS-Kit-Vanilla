@@ -27,6 +27,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import stat
 import string
 import subprocess
 import sys
@@ -717,17 +718,85 @@ def host_ports(answers):
             "chat": SPRING_CHAT_PORT + o}
 
 
-def render_compose_override(kind, offset):
-    """docker-compose.override.yml remapping host ports (+offset) and using separate image names,
-    so a second copy can run next to an existing one. Needs Docker Compose 2.24+ (!override)."""
-    lines = ["# Written by the OCS-in-a-Kit installer (--port-offset %d). Delete it and run" % offset,
-             "# 'docker compose up -d --build' to go back to the default ports.", "services:"]
+# Bind-mounted data folder of each backend (relative to its checkout) and the uid its web
+# container runs as (None = root inside the image).
+DATA_DIRS = {"flask": ["instance/volumes", "instance/uploads", "instance/data"], "spring": ["volumes"]}
+CONTAINER_UID = {"flask": 1000, "spring": None}
+DATA_DIR_MODE = 0o750
+
+
+def secure_data_dir(path, chown_to=None):
+    """Close one backend data folder to other local users: it holds the databases with password
+    hashes and student data. The folder gets 0o750, nothing below it keeps 'other' permissions,
+    database files get 0o600. With chown_to (installer running as root) everything is handed to
+    that uid. Symlinks are never followed or changed (lstat only), so a link inside the install
+    folder cannot redirect a chmod/chown elsewhere. Only entries this user owns are changed.
+    Returns False when `path` is not a real directory (e.g. a symlink) and nothing was done."""
+    path = str(path)
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        return False
+    me = os.getuid() if hasattr(os, "getuid") else None
+    entries = [path]
+    for root, dirs, files in os.walk(path, followlinks=False):
+        entries += [os.path.join(root, n) for n in dirs + files]
+    for p in entries:
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        if stat.S_ISLNK(st.st_mode) or not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+            continue
+        try:
+            if chown_to is not None and me == 0:
+                os.chown(p, chown_to, chown_to, follow_symlinks=False)
+            elif me is not None and st.st_uid != me:
+                continue
+            mode = stat.S_IMODE(st.st_mode)
+            if p == path:
+                new = DATA_DIR_MODE
+            elif stat.S_ISREG(st.st_mode) and p.endswith((".db", ".sqlite")):
+                new = 0o600
+            else:
+                new = mode & ~0o007
+            if new != mode:
+                os.chmod(p, new)  # p is not a symlink (checked with lstat above)
+        except OSError:
+            pass
+    return True
+
+
+def container_user_override(kind, uid, gid):
+    """'uid:gid' to run the web container as, when the image's fixed non-root uid would not match
+    the owner of the bind-mounted data folder (Linux only; Docker Desktop maps ownership itself)."""
+    cuid = CONTAINER_UID.get(kind)
+    if not cuid or uid is None or uid in (0, cuid) or not sys.platform.startswith("linux"):
+        return None
+    return "%d:%d" % (uid, gid)
+
+
+def render_compose_override(kind, offset, web_user=None):
+    """docker-compose.override.yml: with an offset, remap host ports (+offset) and use separate
+    image names so a second copy can run next to an existing one (Compose 2.24+ for !override);
+    with web_user, run the web service as that uid:gid."""
+    lines = ["# Written by the OCS-in-a-Kit installer. Re-run the installer to change it.", "services:"]
     for svc, ports in COMPOSE_SERVICES[kind].items():
-        lines.append("  %s:" % svc)
-        lines.append("    image: ocskit_%s_%s" % (kind, svc))
-        if ports:
-            lines.append("    ports: !override")
-            lines += ['      - "%d:%d"' % (p + offset, p) for p in ports]
+        body = []
+        if offset:
+            body.append("    image: ocskit_%s_%s" % (kind, svc))
+            if ports:
+                body.append("    ports: !override")
+                body += ['      - "%d:%d"' % (p + offset, p) for p in ports]
+        if web_user and svc == "web":
+            body.append('    user: "%s"' % web_user)
+            body.append("    environment:")
+            body.append("      HOME: /tmp")
+        if body:
+            lines.append("  %s:" % svc)
+            lines += body
     return "\n".join(lines) + "\n"
 
 
@@ -1517,36 +1586,39 @@ class Installer:
         return envs
 
     def prepare_backend_dirs(self):
-        """Data folders the containers bind-mount, plus the port-offset compose override."""
+        """Data folders the containers bind-mount, plus the docker-compose.override.yml.
+
+        The folders are created by the installing user (if Docker created a missing bind-mount
+        source it would be owned by root, and the non-root Flask container could not write it)
+        and closed to other local users (0o750): they hold the databases with password hashes."""
         offset = int(self.a.get("port_offset") or 0)
-        for kind, sub in (("flask", "instance/volumes"), ("spring", "volumes")):
+        uid = os.getuid() if hasattr(os, "getuid") else None
+        gid = os.getgid() if hasattr(os, "getgid") else None
+        for kind in ("flask", "spring"):
             d = self.dirs[kind]
-            data = d / sub
-            if self.dry:
-                self.log("[dry-run] mkdir -p %s" % data)
-            else:
-                # Create them as this user: if Docker creates a missing bind-mount source it is
-                # owned by root and the non-root app user in the container cannot write to it.
-                data.mkdir(parents=True, exist_ok=True)
-                if hasattr(os, "getuid") and os.getuid() != 1000 and sys.platform.startswith("linux"):
-                    # The Flask image runs as uid 1000; let it write the data folder.
-                    top = d / sub.split("/")[0]
-                    for root, dirs, _files in os.walk(top):
-                        for x in [root] + [os.path.join(root, n) for n in dirs]:
-                            try:
-                                os.chmod(x, 0o777)
-                            except OSError:
-                                pass
+            cuid = CONTAINER_UID.get(kind)
+            for rel in DATA_DIRS[kind]:
+                data = d / rel
+                if self.dry:
+                    self.log("[dry-run] mkdir -p %s (mode 750)" % data)
+                    continue
+                if os.path.islink(str(data)):
+                    self.log("WARNING: %s is a symlink; leaving it and its target alone" % data)
+                    continue
+                data.mkdir(mode=DATA_DIR_MODE, parents=True, exist_ok=True)
+                secure_data_dir(data, chown_to=cuid if uid == 0 else None)
+            web_user = container_user_override(kind, uid, gid)
             override = d / "docker-compose.override.yml"
-            if offset:
-                self.write(override, render_compose_override(kind, offset),
-                           describe="host ports +%d, separate image names" % offset)
+            if offset or web_user:
+                self.write(override, render_compose_override(kind, offset, web_user),
+                           describe=", ".join(x for x in ("host ports +%d" % offset if offset else "",
+                                                          "web runs as %s" % web_user if web_user else "") if x))
             elif override.exists() and "OCS-in-a-Kit installer" in self.read(override, ""):
                 if self.dry:
                     self.log("[dry-run] remove %s" % override)
                 else:
                     override.unlink()
-                    self.log("removed %s (back to default ports)" % override)
+                    self.log("removed %s (back to the defaults)" % override)
 
     def step_configure_backend(self):
         self.prepare_backend_dirs()

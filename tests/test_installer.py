@@ -505,7 +505,82 @@ class PortOffsetTests(unittest.TestCase):
             self.assertTrue((root / "spring" / "volumes").is_dir())
             self.assertIn('"8594:8587"', (root / "flask" / "docker-compose.override.yml").read_text())
             ki.Installer(good_answers(install_dir=tmp), cat).prepare_backend_dirs()
-            self.assertFalse((root / "flask" / "docker-compose.override.yml").exists())
+            override = root / "flask" / "docker-compose.override.yml"
+            if ki.container_user_override("flask", os.getuid(), os.getgid()):
+                self.assertNotIn("ports", override.read_text())
+            else:
+                self.assertFalse(override.exists())
+
+    def _prepare(self, tmp, setup=None):
+        cat = ki.validate_catalog(json.loads(json.dumps(FIXTURE)))
+        root = Path(tmp)
+        for kind in ("flask", "spring"):
+            (root / kind).mkdir()
+        if setup:
+            setup(root)
+        ki.Installer(good_answers(install_dir=tmp), cat).prepare_backend_dirs()
+        return root
+
+    def test_data_dirs_not_world_accessible(self):
+        old_umask = os.umask(0)  # worst case: nothing masked by the user's umask
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                def setup(root):
+                    vol = root / "flask" / "instance" / "volumes"
+                    (vol / "sub").mkdir(parents=True, mode=0o777)
+                    (vol / "user_management.db").write_text("x")
+                    os.chmod(vol / "user_management.db", 0o666)
+                    os.chmod(root / "flask", 0o755)
+                root = self._prepare(tmp, setup)
+                for rel in ki.DATA_DIRS["flask"]:
+                    self.assertTrue((root / "flask" / rel).is_dir())
+                tops = [root / "flask" / rel for rel in ki.DATA_DIRS["flask"]] + [root / "spring" / "volumes"]
+                for top in tops:
+                    self.assertEqual(top.stat().st_mode & 0o777, ki.DATA_DIR_MODE, top)
+                    for path in top.rglob("*"):
+                        self.assertEqual(path.stat().st_mode & 0o007, 0, "%s open to other users" % path)
+                self.assertEqual((root / "flask/instance/volumes/user_management.db").stat().st_mode & 0o777, 0o600)
+                # parents and the repo itself are never touched
+                self.assertEqual((root / "flask").stat().st_mode & 0o777, 0o755)
+        finally:
+            os.umask(old_umask)
+
+    def test_symlinks_are_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            out = Path(outside)
+            target_file = out / "secret.db"
+            target_file.write_text("x")
+            os.chmod(target_file, 0o644)
+            target_dir = out / "dir"
+            target_dir.mkdir()
+            os.chmod(target_dir, 0o755)
+            spring_target = out / "spring-data"
+            spring_target.mkdir()
+            os.chmod(spring_target, 0o755)
+
+            def setup(root):
+                vol = root / "flask" / "instance" / "volumes"
+                vol.mkdir(parents=True)
+                os.symlink(str(target_file), str(vol / "link.db"))
+                os.symlink(str(target_dir), str(vol / "linkdir"))
+                os.symlink(str(spring_target), str(root / "spring" / "volumes"))  # the data dir itself
+            root = self._prepare(tmp, setup)
+            self.assertEqual(target_file.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(target_dir.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(spring_target.stat().st_mode & 0o777, 0o755)
+            self.assertTrue(os.path.islink(str(root / "spring" / "volumes")))
+            self.assertFalse(ki.secure_data_dir(root / "spring" / "volumes"))
+
+    def test_container_user_override(self):
+        self.assertIsNone(ki.container_user_override("flask", 1000, 1000))   # matches the image's appuser
+        self.assertIsNone(ki.container_user_override("flask", 0, 0))         # root: data is chowned instead
+        self.assertIsNone(ki.container_user_override("spring", 1001, 1001))  # spring runs as root in its image
+        if sys.platform.startswith("linux"):
+            self.assertEqual(ki.container_user_override("flask", 1001, 1002), "1001:1002")
+            o = ki.render_compose_override("flask", 0, "1001:1002")
+            self.assertIn('  web:\n    user: "1001:1002"', o)
+            self.assertNotIn("ports", o)
+            self.assertNotIn("image:", o)
 
 
 class NginxTests(unittest.TestCase):
