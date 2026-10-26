@@ -80,6 +80,12 @@
         "rule": "secret:password-literal",
         "match": "123Qwerty!",
         "reason": "documented development-only default password (DEFAULT_PASSWORD fallback, refused in production)"
+      },
+      {
+        "path": "tests/conftest.py",
+        "rule": "secret:password-literal",
+        "match": "123Qwerty!",
+        "reason": "test fixture uses the documented development-only default password"
       }
     ]
   },

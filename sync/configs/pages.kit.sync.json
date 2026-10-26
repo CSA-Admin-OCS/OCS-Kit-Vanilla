@@ -190,6 +190,11 @@
         "path": "kit.scrub-allow",
         "rule": "*",
         "reason": "allowlist itself"
+      },
+      {
+        "path": "assets/js/admin/mock/*.json",
+        "rule": "pii:handles",
+        "reason": "admin dashboard mock data (?mock=1) with placeholder users like student01, marked 'Not real users'"
       }
     ],
     "skip": []
