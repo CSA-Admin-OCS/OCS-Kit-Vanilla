@@ -1,7 +1,7 @@
 """Strip text metadata from PNG and JPEG files (stdlib only).
 
 Design tools (Canva, Photoshop) write the author's account/brand into image metadata, e.g.
-``brand=Del Norte High``. Pixels are untouched.
+``brand=Example High School``. Pixels are untouched.
 """
 
 import struct
