@@ -47,6 +47,13 @@ class DenylistTest(unittest.TestCase):
         g = scrub.ScrubGate({"denylist": [{"id": "deny:school", "regex": "springfield high"}]})
         self.assertIn("deny:school", rules(g.check_text("a.md", "Springfield High rules")))
 
+    def test_mask(self):
+        text = "x/%s-games/a.md | deny:%s=2 | https://%s/p" % (DENY["nighthawk"].lower(), DENY["dnhs"].lower(), DENY["domain"])
+        out, n = self.gate.mask(text)
+        self.assertEqual(n, 3)
+        self.assertEqual(self.gate.check_text("r.md", out), [])
+        self.assertIn("x/[masked]-games/a.md", out)
+
     def test_binary_metadata(self):
         data = png_with_text("brand=%s High" % DENY["delnorte"])
         fs, _ = self.gate.check_bytes("images/a.png", data)

@@ -142,6 +142,24 @@ class EndToEndTest(unittest.TestCase):
         rc, out, err = self.sb.cli("check", "--canonical", "")
         self.assertEqual(rc, 0, out + err)
 
+    def test_scan_masks_denylisted_terms(self):
+        term = DENY["nighthawk"].lower()
+        write(self.sb.up, "navigation/%s-arcade/game.md" % term, "---\nlayout: base\n---\nhi\n")
+        git(self.sb.up, "add", "-A")
+        git(self.sb.up, "commit", "-q", "-m", "more")
+        report = os.path.join(self.sb.tmp, "report.md")
+        rc, out, err = self.sb.cli("scan", "-o", report)
+        self.assertEqual(rc, 0, err)
+        text = read(self.sb.tmp, "report.md")
+        self.assertNotIn(term, text.lower())
+        self.assertIn("navigation/[masked]-arcade", text)
+        self.assertIn("masked as [masked]", text)
+        rc, out, err = self.sb.cli("scan", "--json")
+        self.assertNotIn(term, out.lower())
+        json.loads(out)
+        rc, out, err = self.sb.cli("scan", "--no-mask")
+        self.assertIn("navigation/%s-arcade" % term, out)
+
     def test_update_blocks_leak(self):
         rc, out, err = self.sb.cli("import", "--feature", "games", "--paths", "navigation/games/pong.md")
         self.assertEqual(rc, 0, out + err)

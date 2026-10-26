@@ -233,6 +233,14 @@ class ScrubGate(object):
                 Allowlist.parse_file(p, into=self.allowlist)
 
     # ---- individual checks -------------------------------------------------
+    def mask(self, text, token="[masked]"):
+        """Replace every denylisted term in ``text`` (used for reports that may be posted publicly)."""
+        n = 0
+        for _, rx in self.denylist:
+            text, k = rx.subn(token, text)
+            n += k
+        return text, n
+
     def _deny(self, path, text, line_offset=None):
         out = []
         for rid, rx in self.denylist:

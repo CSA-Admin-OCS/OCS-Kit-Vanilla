@@ -140,8 +140,9 @@ def format_scan(r, markdown=False, max_paths=8):
     h = "## " if markdown else ""
     L.append("%sUpstream scan" % ("# " if markdown else ""))
     L.append("")
-    L.append("- upstream: %s @ %s (%d files)" % (redact_url(r["upstream"].get("url") or r["upstream"]["root"]), r["upstream"]["sha"][:10] or "?", r["upstream"]["files"]))
-    L.append("- kit: %s (%d files, catalog: %s)" % (r["kit"]["root"], r["kit"]["files"], "yes" if r["kit"]["catalog"] else "MISSING"))
+    L.append("- upstream: %s @ %s (%d files)" % (redact_url(r["upstream"].get("url")) or os.path.basename(r["upstream"]["root"].rstrip("/")), r["upstream"]["sha"][:10] or "?", r["upstream"]["files"]))
+    # repo names only: reports get committed and posted, local paths would leak usernames
+    L.append("- kit: %s (%d files, catalog: %s)" % (os.path.basename(r["kit"]["root"].rstrip("/")), r["kit"]["files"], "yes" if r["kit"]["catalog"] else "MISSING"))
     L.append("- new: %d, changed: %d, identical: %d, protected (kit-owned, skipped): %d, excluded by config: %d" % (
         c["new"], c["changed"], c["same"], c["protected"], c["excluded"]))
     L.append("")

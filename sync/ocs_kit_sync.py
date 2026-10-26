@@ -48,6 +48,11 @@ def cmd_scan(args):
         out = json.dumps(rep, indent=2)
     else:
         out = scan.format_scan(rep, markdown=args.markdown or bool(args.output and args.output.endswith(".md")))
+    if not args.no_mask:
+        # reports end up in issues and repos: never print school/teacher terms from upstream paths
+        out, n = scrub.ScrubGate(ctx.cfg.scrub).mask(out)
+        if n and not args.json:
+            out += "\n\n_%d school-specific term(s) masked as [masked]; run scan --no-mask locally to see them._" % n
     if args.output:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
         with open(args.output, "w", encoding="utf-8") as f:
@@ -185,6 +190,8 @@ def build_parser():
     p.add_argument("--markdown", action="store_true")
     p.add_argument("--no-deps", action="store_true", help="skip dependency resolution per group (faster)")
     p.add_argument("--no-scrub", action="store_true", help="skip scrub preview per group (faster)")
+    p.add_argument("--no-mask", action="store_true",
+                   help="do not mask denylisted terms in the report (local use only; never post it)")
     p.set_defaults(func=cmd_scan)
 
     def transfer_opts(p):

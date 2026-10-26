@@ -72,6 +72,9 @@ but not committed, so you can inspect them).
   goes into a report, commit message or PR body. Git error output is redacted the same way. A
   cached clone keeps only the redacted URL as `origin`, and fetches use the URL you pass.
   In CI, pass tokens as secrets (`UPSTREAM_TOKEN`), never in the URL.
+- **Masked reports.** `scan` output (markdown, text and JSON) replaces every denylisted term
+  in upstream path names and rule ids with `[masked]`, because reports get committed and
+  posted to issues. Use `scan --no-mask` locally to see the real paths, and never post that output.
 - **No direct commits to main.** Imports and updates always go on a new branch, and a
   failed validator leaves the branch uncommitted.
 
