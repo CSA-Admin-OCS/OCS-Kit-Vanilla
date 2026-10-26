@@ -4,6 +4,8 @@ import os
 import re
 import subprocess
 
+from .urls import redact_text, redact_url
+
 
 class GitError(Exception):
     pass
@@ -15,7 +17,8 @@ def git(repo, *args, **kw):
     env.setdefault("GIT_TERMINAL_PROMPT", "0")
     p = subprocess.run(["git", "-C", repo] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     if check and p.returncode != 0:
-        raise GitError("git %s failed in %s: %s" % (" ".join(args), repo, p.stderr.decode("utf-8", "replace").strip()))
+        raise GitError(redact_text("git %s failed in %s: %s" % (" ".join(args), repo,
+                                                                 p.stderr.decode("utf-8", "replace").strip())))
     return p.stdout.decode("utf-8", "replace")
 
 
@@ -69,7 +72,7 @@ def default_cache():
 
 
 def _slug(url):
-    s = re.sub(r"^[a-z]+://", "", url.strip().rstrip("/"))
+    s = re.sub(r"^[a-z]+://", "", redact_url(url).strip().rstrip("/"))
     s = re.sub(r"\.git$", "", s)
     return re.sub(r"[^A-Za-z0-9_.\-]+", "_", s)
 
@@ -82,7 +85,7 @@ class Upstream(object):
         if is_repo(self.root):
             self.files = set(ls_files(self.root))
             self.sha = head(self.root)
-            self.url = git(self.root, "remote", "get-url", "origin", check=False).strip()
+            self.url = redact_url(git(self.root, "remote", "get-url", "origin", check=False).strip())
         else:
             self.url = ""
             from .scrub import list_repo_files
@@ -116,14 +119,19 @@ def open_upstream(spec, branch="main", cache=None, fetch=True, log=print):
     dest = os.path.join(cache, _slug(spec))
     if os.path.isdir(os.path.join(dest, ".git")):
         if fetch:
-            log("fetching %s (%s) into %s" % (spec, branch, dest))
-            git(dest, "fetch", "--depth", "1", "origin", branch)
+            log("fetching %s (%s) into %s" % (redact_url(spec), branch, dest))
+            # fetch from the given URL, not 'origin': the stored remote never carries credentials
+            git(dest, "fetch", "--depth", "1", spec, branch)
             git(dest, "reset", "--hard", "-q", "FETCH_HEAD")
     else:
         os.makedirs(cache, exist_ok=True)
-        log("cloning %s (%s, shallow) into %s" % (spec, branch, dest))
+        log("cloning %s (%s, shallow) into %s" % (redact_url(spec), branch, dest))
+        env = dict(os.environ)
+        env.setdefault("GIT_TERMINAL_PROMPT", "0")
         p = subprocess.run(["git", "clone", "-q", "--depth", "1", "--branch", branch, spec, dest],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         if p.returncode != 0:
-            raise GitError("clone failed: %s" % p.stderr.decode("utf-8", "replace"))
+            raise GitError(redact_text("clone failed: %s" % p.stderr.decode("utf-8", "replace")))
+        # keep credentials out of the cached clone's .git/config
+        git(dest, "remote", "set-url", "origin", redact_url(spec))
     return Upstream(dest)

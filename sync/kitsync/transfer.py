@@ -21,6 +21,7 @@ import sys
 
 from . import catalog as catalog_mod
 from . import globs, gitops, scrub
+from .urls import redact_text, redact_url
 
 
 class TransferError(Exception):
@@ -272,7 +273,18 @@ def _run_cmd(root, cmd, timeout=1800):
         cmd = shlex.split(cmd)
     cmd = [sys.executable if c in ("python", "python3", "{python}") else c for c in cmd]
     p = subprocess.run(cmd, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-    return p.returncode, p.stdout.decode("utf-8", "replace")
+    return p.returncode, redact_text(p.stdout.decode("utf-8", "replace"))
+
+
+def _default_runner(root):
+    """Run a git/gh command, echoing its output with any URL credentials removed."""
+    def run(cmd):
+        p = subprocess.run(cmd, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = redact_text(p.stdout.decode("utf-8", "replace")).strip()
+        if out:
+            print(out)
+        return p.returncode
+    return run
 
 
 def _cmd_available(root, cmd):
@@ -325,7 +337,8 @@ def _git_ident(root, key, default):
 
 
 def _open_pr(ctx, plan, title, body, runner=None):
-    runner = runner or (lambda cmd: subprocess.run(cmd, cwd=ctx.root).returncode)
+    runner = runner or _default_runner(ctx.root)
+    title, body = redact_text(title), redact_text(body)
     if runner(["git", "push", "-u", "origin", plan.branch]) != 0:
         raise TransferError("git push failed; branch %s is committed locally" % plan.branch)
     if runner(["gh", "pr", "create", "--head", plan.branch, "--title", title, "--body", body]) != 0:
@@ -470,7 +483,7 @@ def do_update(ctx, feature, dry_run=False, follow_deps=True, commit=True, pr=Fal
 def _body(ctx, plan, patterns):
     adds = [f["kit"] for f in plan.files if f["action"] == "add"]
     upds = [f["kit"] for f in plan.files if f["action"] == "update"]
-    lines = ["Upstream: %s%s" % (ctx.cfg.upstream_url or ctx.up.root, (" @ " + ctx.up.sha) if ctx.up.sha else ""),
+    lines = ["Upstream: %s%s" % (redact_url(ctx.cfg.upstream_url or ctx.up.root), (" @ " + ctx.up.sha) if ctx.up.sha else ""),
              "Requested: %s" % ", ".join(patterns),
              "Added %d file(s), updated %d file(s)." % (len(adds), len(upds))]
     if plan.resolution and plan.resolution.missing:

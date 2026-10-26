@@ -24,12 +24,13 @@ from kitsync import catalog as catalog_mod  # noqa: E402
 from kitsync import config as config_mod  # noqa: E402
 from kitsync import gitops, media, scan, scrub, transfer  # noqa: E402
 from kitsync.core import KitContext  # noqa: E402
+from kitsync.urls import redact_text  # noqa: E402
 
 DEFAULT_CANONICAL = os.path.join(os.path.dirname(HERE), "kits", "catalog.json")
 
 
 def _log(msg):
-    sys.stderr.write(msg + "\n")
+    sys.stderr.write(redact_text(str(msg)) + "\n")
 
 
 def _context(args):

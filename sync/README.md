@@ -67,6 +67,11 @@ but not committed, so you can inspect them).
   caches) is always excluded.
 - **Catalog conflicts.** A path already owned by another feature is refused. Use `--move`
   to take it on purpose. A directory entry can't be split by `--move`.
+- **No credentials in output.** Every upstream URL is passed through `kitsync/urls.redact_url`
+  (it drops `user:token@` and secret-looking query values) before it is logged or stored, or
+  goes into a report, commit message or PR body. Git error output is redacted the same way. A
+  cached clone keeps only the redacted URL as `origin`, and fetches use the URL you pass.
+  In CI, pass tokens as secrets (`UPSTREAM_TOKEN`), never in the URL.
 - **No direct commits to main.** Imports and updates always go on a new branch, and a
   failed validator leaves the branch uncommitted.
 

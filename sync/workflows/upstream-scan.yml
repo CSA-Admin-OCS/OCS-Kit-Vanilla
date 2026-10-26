@@ -6,6 +6,9 @@
 #
 # Needs: the OCS-Kit repo (sync tool + canonical catalog). Set repository variable OCS_KIT_REPO
 # (default CSA-Admin-OCS/OCS-Kit); if it is private, add a read token as secret OCS_KIT_TOKEN.
+# A private upstream: add a read token as secret UPSTREAM_TOKEN. It is masked and sent as an HTTP
+# header through git's environment, never put in the URL, so it can't reach the report or the issue.
+# The "upstream" input must be a plain URL; a URL with user:token@ in it is masked and refused.
 name: Upstream scan
 
 on:
@@ -46,8 +49,25 @@ jobs:
         id: scan
         env:
           UPSTREAM: ${{ github.event.inputs.upstream }}
+          UPSTREAM_TOKEN: ${{ secrets.UPSTREAM_TOKEN }}
         run: |
           set -o pipefail
+          # never let credentials ride in the URL: mask any userinfo and refuse
+          if printf '%s' "$UPSTREAM" | grep -Eq '^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*@'; then
+            USERINFO=$(printf '%s' "$UPSTREAM" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://([^/]*)@.*#\1#')
+            echo "::add-mask::$USERINFO"
+            echo "::error::the upstream input contains credentials; pass a plain URL and set secret UPSTREAM_TOKEN"
+            exit 1
+          fi
+          if [ -n "$UPSTREAM_TOKEN" ]; then
+            echo "::add-mask::$UPSTREAM_TOKEN"
+            BASIC=$(printf 'x-access-token:%s' "$UPSTREAM_TOKEN" | base64 -w0)
+            echo "::add-mask::$BASIC"
+            # header for github.com only, via git's environment config (nothing written to disk)
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+            export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $BASIC"
+          fi
           CONFIG=kit/kit.sync.json
           [ -f "$CONFIG" ] || CONFIG=ocs-kit/sync/configs/pages.kit.sync.json
           ARGS=(scan --kit kit --config "$CONFIG" --canonical ocs-kit/kits/catalog.json --cache "$RUNNER_TEMP/ocs-kit-sync")
