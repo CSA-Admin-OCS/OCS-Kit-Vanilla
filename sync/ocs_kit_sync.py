@@ -44,15 +44,18 @@ def _context(args):
 def cmd_scan(args):
     ctx = _context(args)
     rep = scan.run_scan(ctx, with_deps=not args.no_deps, with_scrub=not args.no_scrub)
+    # sanitize every string BEFORE serializing; reports end up in issues and repos
+    gate = None if args.no_mask else scrub.ScrubGate(ctx.cfg.scrub)
+    rep, n = scan.sanitize(rep, gate)
     if args.json:
-        out = json.dumps(rep, indent=2)
+        out = json.dumps(rep, indent=2, ensure_ascii=False)
     else:
         out = scan.format_scan(rep, markdown=args.markdown or bool(args.output and args.output.endswith(".md")))
-    if not args.no_mask:
-        # reports end up in issues and repos: never print school/teacher terms from upstream paths
-        out, n = scrub.ScrubGate(ctx.cfg.scrub).mask(out)
-        if n and not args.json:
-            out += "\n\n_%d school-specific term(s) masked as [masked]; run scan --no-mask locally to see them._" % n
+        if gate is not None:
+            out, k = gate.mask(out)  # formatter text is plain, so a second pass is safe here
+            n += k
+            if n:
+                out += "\n\n_%d school-specific term(s) masked as [masked]; run scan --no-mask locally to see them._" % n
     if args.output:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
         with open(args.output, "w", encoding="utf-8") as f:

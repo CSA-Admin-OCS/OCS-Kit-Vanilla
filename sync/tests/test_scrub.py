@@ -54,6 +54,22 @@ class DenylistTest(unittest.TestCase):
         self.assertEqual(self.gate.check_text("r.md", out), [])
         self.assertIn("x/[masked]-games/a.md", out)
 
+    def test_sanitize_report(self):
+        from kitsync.scan import sanitize
+        tok = "ghs_" + "Z" * 30
+        rep = {"k %s" % DENY["poway"]: ['a"%s\\b' % DENY["nighthawk"], {"u": "https://x:%s@h.com/r?token=%s" % (tok, tok)}],
+               "n": 3, "set": {"z", DENY["dnhs"]}}
+        out, n = sanitize(rep, self.gate)
+        self.assertEqual(n, 3)
+        flat = json.dumps(out, ensure_ascii=False)
+        self.assertNotIn(tok, flat)
+        self.assertEqual(self.gate.check_text("r.json", flat), [])
+        self.assertEqual(json.loads(flat)["n"], 3)
+        self.assertIn("k [masked]", out)
+        out2, n2 = sanitize(rep, None)  # --no-mask still removes credentials
+        self.assertEqual(n2, 0)
+        self.assertNotIn(tok, json.dumps(out2))
+
     def test_binary_metadata(self):
         data = png_with_text("brand=%s High" % DENY["delnorte"])
         fs, _ = self.gate.check_bytes("images/a.png", data)

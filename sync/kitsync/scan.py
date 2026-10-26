@@ -6,7 +6,7 @@ import os
 import re
 
 from . import globs
-from .urls import redact_url
+from .urls import redact_text, redact_url
 
 
 def group_key(upath):
@@ -115,8 +115,10 @@ def run_scan(ctx, with_deps=True, with_scrub=True, limit_groups=None):
                 changed_scrub[u] = [x.format() for x in fs[:3]]
 
     return {
-        "upstream": {"root": ctx.up.root, "url": redact_url(getattr(ctx.up, "url", "")), "sha": ctx.up.sha, "files": len(ctx.up.files)},
-        "kit": {"root": ctx.root, "files": len(ctx.kit_files), "catalog": bool(ctx.catalog)},
+        # repo names only, never local paths: reports get committed and posted to issues
+        "upstream": {"name": _name(ctx.up.root), "url": redact_url(getattr(ctx.up, "url", "")), "sha": ctx.up.sha,
+                     "files": len(ctx.up.files)},
+        "kit": {"name": _name(ctx.root), "files": len(ctx.kit_files), "catalog": bool(ctx.catalog)},
         "counts": {"new": len(new), "changed": len(changed), "same": len(same),
                    "protected": len(protected), "excluded": len(excluded), "groups": len(group_rows)},
         "changed_by_feature": {k: sorted(v) for k, v in sorted(changed_by_feature.items())},
@@ -125,6 +127,35 @@ def run_scan(ctx, with_deps=True, with_scrub=True, limit_groups=None):
         "excluded": excluded,
         "groups": group_rows,
     }
+
+
+def _name(path):
+    return os.path.basename(os.path.abspath(path).rstrip(os.sep)) if path else ""
+
+
+def sanitize(obj, gate=None):
+    """Return (copy of obj, masked count): every string, keys included, has URL credentials removed
+    and (with ``gate``) denylisted terms masked. Run this BEFORE serializing, so JSON escaping
+    (quotes, backslashes, \\uXXXX) can't hide a term from the patterns or be corrupted by masking."""
+    count = [0]
+
+    def s(v):
+        v = redact_text(v)
+        if gate is not None:
+            v, n = gate.mask(v)
+            count[0] += n
+        return v
+
+    def walk(o):
+        if isinstance(o, str):
+            return s(o)
+        if isinstance(o, dict):
+            return {(s(k) if isinstance(k, str) else k): walk(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple, set)):
+            return [walk(v) for v in (sorted(o) if isinstance(o, set) else o)]
+        return o
+
+    return walk(obj), count[0]
 
 
 def _count(items):
@@ -140,9 +171,8 @@ def format_scan(r, markdown=False, max_paths=8):
     h = "## " if markdown else ""
     L.append("%sUpstream scan" % ("# " if markdown else ""))
     L.append("")
-    L.append("- upstream: %s @ %s (%d files)" % (redact_url(r["upstream"].get("url")) or os.path.basename(r["upstream"]["root"].rstrip("/")), r["upstream"]["sha"][:10] or "?", r["upstream"]["files"]))
-    # repo names only: reports get committed and posted, local paths would leak usernames
-    L.append("- kit: %s (%d files, catalog: %s)" % (os.path.basename(r["kit"]["root"].rstrip("/")), r["kit"]["files"], "yes" if r["kit"]["catalog"] else "MISSING"))
+    L.append("- upstream: %s @ %s (%d files)" % (redact_url(r["upstream"].get("url")) or r["upstream"]["name"], r["upstream"]["sha"][:10] or "?", r["upstream"]["files"]))
+    L.append("- kit: %s (%d files, catalog: %s)" % (r["kit"]["name"], r["kit"]["files"], "yes" if r["kit"]["catalog"] else "MISSING"))
     L.append("- new: %d, changed: %d, identical: %d, protected (kit-owned, skipped): %d, excluded by config: %d" % (
         c["new"], c["changed"], c["same"], c["protected"], c["excluded"]))
     L.append("")

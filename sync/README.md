@@ -74,7 +74,10 @@ but not committed, so you can inspect them).
   In CI, pass tokens as secrets (`UPSTREAM_TOKEN`), never in the URL.
 - **Masked reports.** `scan` output (markdown, text and JSON) replaces every denylisted term
   in upstream path names and rule ids with `[masked]`, because reports get committed and
-  posted to issues. Use `scan --no-mask` locally to see the real paths, and never post that output.
+  posted to issues. Every string in the report, keys included, is redacted and masked before it
+  is serialized, so JSON escaping can't hide a term. Reports name repos, not local paths. Use
+  `scan --no-mask` locally to see the real paths, and never post that output. URL credentials
+  are removed even with `--no-mask`.
 - **No direct commits to main.** Imports and updates always go on a new branch, and a
   failed validator leaves the branch uncommitted.
 

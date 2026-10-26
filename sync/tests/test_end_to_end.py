@@ -160,6 +160,33 @@ class EndToEndTest(unittest.TestCase):
         rc, out, err = self.sb.cli("scan", "--no-mask")
         self.assertIn("navigation/%s-arcade" % term, out)
 
+    def test_scan_json_sanitized_before_serializing(self):
+        term = DENY["nighthawk"].lower()
+        nbsp_term = DENY["delnorte"].replace(" ", "\u00a0")  # escaped as \u00a0 by ensure_ascii JSON
+        names = ["navigation/%s/a.md" % nbsp_term, 'navigation/q"%s"/a.md' % term,
+                 "navigation/b\\%s/a.md" % term, "navigation/caf\u00e9-%s/a.md" % term]
+        for n in names:
+            write(self.sb.up, n, "---\nlayout: base\n---\nhi\n")
+        git(self.sb.up, "add", "-A")
+        git(self.sb.up, "commit", "-q", "-m", "odd names")
+        rc, out, err = self.sb.cli("scan", "--json")
+        self.assertEqual(rc, 0, err)
+        rep = json.loads(out)  # still valid JSON
+        flat = json.dumps(rep, ensure_ascii=False).lower()
+        self.assertNotIn(term, out.lower())
+        self.assertNotIn(term, flat)
+        self.assertNotIn(DENY["delnorte"].lower().replace(" ", "\u00a0"), flat)
+        self.assertNotIn("\\u00a0", out)  # raw unicode, not escapes
+        self.assertIn("caf\u00e9-[masked]", out)
+        # no local filesystem paths anywhere
+        self.assertNotIn(self.sb.tmp, out)
+        self.assertNotIn("/home/", out)
+        self.assertEqual(rep["kit"]["name"], "kit")
+        self.assertEqual(rep["upstream"]["name"], "upstream")
+        rc, md, err = self.sb.cli("scan")
+        self.assertNotIn(self.sb.tmp, md)
+        self.assertNotIn(term, md.lower())
+
     def test_update_blocks_leak(self):
         rc, out, err = self.sb.cli("import", "--feature", "games", "--paths", "navigation/games/pong.md")
         self.assertEqual(rc, 0, out + err)
