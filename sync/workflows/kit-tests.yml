@@ -1,0 +1,65 @@
+# Copy to OCS-Kit-Pages/.github/workflows/kit-tests.yml
+#
+# On every pull request (including the import/* and update/* branches made by ocs_kit_sync.py):
+#   1. the sync tool's unit tests
+#   2. the "nothing broke" suite against THIS repo: catalog ids/categories/labels/kits match the
+#      canonical catalog, every catalog path exists, no path is claimed twice, setup blocks are
+#      complete, scripts/apply_kit.py --check passes, and the scrub gate passes on the whole repo
+#   3. (label "full-build" or manual run) per-kit Jekyll builds + internal link check
+#
+# Needs the OCS-Kit repo (sync tool + canonical catalog). Set repository variable OCS_KIT_REPO
+# (default CSA-Admin-OCS/OCS-Kit); if it is private, add a read token as secret OCS_KIT_TOKEN.
+name: Kit tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full_build:
+        description: "Also build every kit and check links (slow)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out kit repo
+        uses: actions/checkout@v4
+        with:
+          path: kit
+
+      - name: Check out OCS-Kit (sync tool + canonical catalog)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.OCS_KIT_REPO || 'CSA-Admin-OCS/OCS-Kit' }}
+          token: ${{ secrets.OCS_KIT_TOKEN || github.token }}
+          path: ocs-kit
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync tool unit tests
+        run: python3 -m unittest discover -s ocs-kit/sync/tests -t ocs-kit/sync/tests -p "test_[!k]*.py" -v
+
+      - name: Set up Ruby (full build only)
+        if: github.event.inputs.full_build == 'true' || contains(github.event.pull_request.labels.*.name, 'full-build')
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: kit
+
+      - name: Nothing-broke suite against this repo
+        env:
+          OCS_KIT_PAGES: ${{ github.workspace }}/kit
+          OCS_KIT_FLASK: /nonexistent
+          OCS_KIT_SPRING: /nonexistent
+          OCS_KIT_CATALOG: ${{ github.workspace }}/ocs-kit/kits/catalog.json
+          OCS_KIT_SLOW: ${{ (github.event.inputs.full_build == 'true' || contains(github.event.pull_request.labels.*.name, 'full-build')) && '1' || '0' }}
+        run: python3 -m unittest discover -s ocs-kit/sync/tests -t ocs-kit/sync/tests -p "test_kit_repos.py" -v

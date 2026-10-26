@@ -114,7 +114,7 @@ def run_scan(ctx, with_deps=True, with_scrub=True, limit_groups=None):
                 changed_scrub[u] = [x.format() for x in fs[:3]]
 
     return {
-        "upstream": {"root": ctx.up.root, "sha": ctx.up.sha, "files": len(ctx.up.files)},
+        "upstream": {"root": ctx.up.root, "url": getattr(ctx.up, "url", ""), "sha": ctx.up.sha, "files": len(ctx.up.files)},
         "kit": {"root": ctx.root, "files": len(ctx.kit_files), "catalog": bool(ctx.catalog)},
         "counts": {"new": len(new), "changed": len(changed), "same": len(same),
                    "protected": len(protected), "excluded": len(excluded), "groups": len(group_rows)},
@@ -139,7 +139,7 @@ def format_scan(r, markdown=False, max_paths=8):
     h = "## " if markdown else ""
     L.append("%sUpstream scan" % ("# " if markdown else ""))
     L.append("")
-    L.append("- upstream: %s @ %s (%d files)" % (r["upstream"]["root"], r["upstream"]["sha"][:10] or "?", r["upstream"]["files"]))
+    L.append("- upstream: %s @ %s (%d files)" % (r["upstream"].get("url") or r["upstream"]["root"], r["upstream"]["sha"][:10] or "?", r["upstream"]["files"]))
     L.append("- kit: %s (%d files, catalog: %s)" % (r["kit"]["root"], r["kit"]["files"], "yes" if r["kit"]["catalog"] else "MISSING"))
     L.append("- new: %d, changed: %d, identical: %d, protected (kit-owned, skipped): %d, excluded by config: %d" % (
         c["new"], c["changed"], c["same"], c["protected"], c["excluded"]))

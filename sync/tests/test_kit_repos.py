@@ -30,6 +30,7 @@ REPOS = {
 }
 CANON_PATH = os.environ.get("OCS_KIT_CATALOG") or CANONICAL
 SLOW = os.environ.get("OCS_KIT_SLOW") == "1"
+SCRATCH = os.environ.get("OCS_KIT_SCRATCH") or None  # where per-kit build copies go (default: system temp)
 
 
 def load_cfg(name, root):
@@ -121,7 +122,7 @@ class PagesRepoTest(_RepoChecks, unittest.TestCase):
         failures = []
         for kit in sorted(cat.data.get("kits", {})):
             with self.subTest(kit=kit):
-                tmp = tempfile.mkdtemp(prefix="ocs-kit-build-%s-" % kit)
+                tmp = tempfile.mkdtemp(prefix="ocs-kit-build-%s-" % kit, dir=SCRATCH)
                 try:
                     errs = _build_and_check(self.root, self.files, kit, tmp)
                     if errs:
@@ -142,8 +143,11 @@ def _build_and_check(root, files, kit, tmp):
         dst = os.path.join(work, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(os.path.join(root, rel), dst)
-    if os.path.isdir(os.path.join(root, "venv")):
-        os.symlink(os.path.join(root, "venv"), os.path.join(work, "venv"))
+    # untracked-but-needed local state: the venv, bundler lock/config
+    for extra in ("venv", "Gemfile.lock", ".bundle", "vendor"):
+        src = os.path.join(root, extra)
+        if os.path.exists(src) and not os.path.exists(os.path.join(work, extra)):
+            os.symlink(src, os.path.join(work, extra))
     rc, out = _run([sys.executable, "scripts/apply_kit.py", "--kit", kit], work)
     if rc != 0:
         return ["apply_kit --kit %s failed:\n%s" % (kit, out[-3000:])]

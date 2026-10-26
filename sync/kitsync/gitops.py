@@ -82,7 +82,9 @@ class Upstream(object):
         if is_repo(self.root):
             self.files = set(ls_files(self.root))
             self.sha = head(self.root)
+            self.url = git(self.root, "remote", "get-url", "origin", check=False).strip()
         else:
+            self.url = ""
             from .scrub import list_repo_files
             self.files = set(list_repo_files(self.root))
             self.sha = ""

@@ -1,0 +1,85 @@
+# Copy to OCS-Kit-Pages/.github/workflows/upstream-scan.yml
+#
+# Weekly (and on demand) scan of the upstream Open Coding Society pages repo: lists new and changed
+# upstream paths, groups new content into suggested kit features and previews the scrub gate.
+# The report is posted to a single issue titled "Upstream scan report" (created once, then updated).
+#
+# Needs: the OCS-Kit repo (sync tool + canonical catalog). Set repository variable OCS_KIT_REPO
+# (default CSA-Admin-OCS/OCS-Kit); if it is private, add a read token as secret OCS_KIT_TOKEN.
+name: Upstream scan
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: "Upstream git URL (default: upstream.url in kit.sync.json)"
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out kit repo
+        uses: actions/checkout@v4
+        with:
+          path: kit
+
+      - name: Check out OCS-Kit (sync tool)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.OCS_KIT_REPO || 'CSA-Admin-OCS/OCS-Kit' }}
+          token: ${{ secrets.OCS_KIT_TOKEN || github.token }}
+          path: ocs-kit
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Scan upstream
+        id: scan
+        env:
+          UPSTREAM: ${{ github.event.inputs.upstream }}
+        run: |
+          set -o pipefail
+          CONFIG=kit/kit.sync.json
+          [ -f "$CONFIG" ] || CONFIG=ocs-kit/sync/configs/pages.kit.sync.json
+          ARGS=(scan --kit kit --config "$CONFIG" --canonical ocs-kit/kits/catalog.json --cache "$RUNNER_TEMP/ocs-kit-sync")
+          [ -n "$UPSTREAM" ] && ARGS+=(--upstream "$UPSTREAM")
+          python3 ocs-kit/sync/ocs_kit_sync.py "${ARGS[@]}" --output report.md
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the report as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-scan-${{ steps.scan.outputs.date }}
+          path: report.md
+
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TITLE="Upstream scan report"
+          {
+            echo "Scan of upstream on ${{ steps.scan.outputs.date }} ([run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}))."
+            echo
+            echo "To bring a feature in: \`python3 sync/ocs_kit_sync.py import --kit . --feature <id> --paths <upstream paths> --dry-run\` (see OCS-Kit sync/README.md)."
+            echo
+            # GitHub issue bodies are limited to 65536 characters
+            head -c 60000 report.md
+          } > body.md
+          NUM=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title \
+                --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n1)
+          if [ -n "$NUM" ]; then
+            gh issue edit "$NUM" --body-file body.md
+            echo "updated issue #$NUM"
+          else
+            gh issue create --title "$TITLE" --body-file body.md
+          fi
