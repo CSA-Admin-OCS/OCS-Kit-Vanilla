@@ -56,10 +56,24 @@ class RedactUrlTest(unittest.TestCase):
         self.assertEqual(redact_url("https://h/x?ref=main&page=2"), "https://h/x?ref=main&page=2")
 
     def test_param_value_with_question_mark_and_at(self):
-        out = redact_text("https://h/x?token=ab?c@SEC1&x=1 db_pass=a=b?SEC2;y=2 url=https://h/y?key=SEC3")
+        out = redact_text("https://h/x?token=ab?c@SEC1&x=1 db_pass=a=b?SEC2&y=2 url=https://h/y?key=SEC3")
         for m in ("SEC1", "SEC2", "SEC3"):
             self.assertNotIn(m, out)
         self.assertIn("y=2", out)
+
+    def test_semicolon_does_not_end_secret_value(self):
+        for text in ("https://h/x?token=a;SECRET_x", "https://h/x?a=1&token=b;SECRET_y", "token=c;SECRET_z;d"):
+            with self.subTest(text=text):
+                self.assertNotIn("SECRET_", redact_text(text))
+        self.assertEqual(redact_text("https://h/x?token=a;b&page=2"), "https://h/x?token=REDACTED&page=2")
+
+    def test_scp_hosts(self):
+        cases = {"user@host_name:repo": "host_name:repo", "tok:SECRET@[::1]:path": "[::1]:path",
+                 "SECRET@host.example.com:org/repo.git": "host.example.com:org/repo.git",
+                 "a@SECRET@h:o/r": "h:o/r"}
+        for text, expect in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact_text(text), expect)
 
     def test_secret_shaped_values_anywhere(self):
         for v in ("AIza" + "B" * 35, "ghp_" + "a" * 36, "github_pat_" + "a" * 30, "gsk_" + "a" * 30,
@@ -137,7 +151,8 @@ class RedactPropertyTest(unittest.TestCase):
     # credential characters: everything except whitespace (tokens are whitespace-separated)
     CRED = list("abcXYZ0129-_.~!$'()*+,;=:/@?#[]%\"\\`<>{}|^&") + ["%40", "%3A", "%2F", "é", "ü", "中", "ß", "😀"]
     # param value characters: no raw '&', '#' or ';' (those end a value by definition)
-    VALUE = list("abcXYZ0129-_.~!$'()*+,=:/@?[]%") + ["%26", "é", "中"]
+    VALUE = list("abcXYZ0129-_.~!$'()*+,=:/@?;[]%") + ["%26", "é", "中"]
+    SCP_HOST = ["github.com", "h", "a.b-c", "host_name", "[::1]", "host.example.com", "x+y", "中.cn"]
     HOST = ["github.com", "gitlab.example.org", "h", "127.0.0.1:9", "[::1]:3000", "a-b.c-d.example"]
     PATH = list("abc019-_./~@:+=!$,")
     PRE = ["", "(", "'", '"', "<", "[", "`", "see ", "url=", "x,", "{"]
@@ -164,7 +179,8 @@ class RedactPropertyTest(unittest.TestCase):
             sep = rng.choice(["?", "&", "#", ";"])
             core = "%s://%s%s?a=1%s%s=%s&b=2" % (scheme, host, path, sep, name, val)
         elif kind == 3:  # scp-like user@host:path
-            core = "%s%s@%s:o/r.git" % (_rand(rng, self.VALUE, 0, 6), marker, rng.choice(["github.com", "h", "a.b-c"]))
+            user = _rand(rng, self.VALUE, 0, 6) + marker + rng.choice(["", ":" + _rand(rng, self.VALUE, 0, 6)])
+            core = "%s@%s:%s" % (user, rng.choice(self.SCP_HOST), rng.choice(["o/r.git", "repo", "path", ""]))
         else:  # two URLs glued together, the secret one second
             core = "%s://h/x,%s://u:%s@%s%s" % (scheme, rng.choice(self.SCHEMES), marker, host, path)
         return rng.choice(self.PRE) + core + rng.choice(self.POST)

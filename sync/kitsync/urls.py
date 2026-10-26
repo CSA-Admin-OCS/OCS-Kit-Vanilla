@@ -8,7 +8,9 @@ Per whitespace-separated token:
   1. a token containing '://': everything from the first '://' to the LAST '@' in the token is
      replaced with '://***@' (userinfo can contain '@', ':', '/', '?', '#'; when several URLs are
      glued together the whole run up to the last '@' goes);
-  2. scp-like ``user@host:path``: the text before the last ``@host:`` is dropped;
+  2. scp-like ``user@host:path`` (any host up to ':'): the text before the last ``@host:`` is
+     dropped, also when that text merely contains '://'; a credentialed URL whose prefix is not a
+     plain scheme gets the prefix masked as well;
      (for 1 and 2: if a secret param value is open where the cut ends, as in ``?token=a@b``,
      the rest of that value is redacted too);
   3. ``name=value`` pairs anywhere in the token (query strings, fragments, path segments, CLI
@@ -34,10 +36,12 @@ _SECRET_NAME = re.compile(r"(?i)(token|secret|pass|pwd|key|sig|auth|credential|s
 _TOKEN = re.compile(r"\S+")
 # query/fragment delimiters (kept by split); a param value ends at & ; or #
 _DELIM = re.compile(r"([?&;#])")
-_VALUE_END = re.compile(r"[&;#]")
-# the host part of scp-like user@host: (single character class, no nesting)
-_SCP_AT = re.compile(r"@[A-Za-z0-9][A-Za-z0-9.\-]*:")
+_VALUE_END = re.compile(r"[&#]")  # ';' does not end a secret value
+# scp-like user@host: -- any host up to ':' (single negated class, no nesting)
+_SCP_AT = re.compile(r"@[^:/\s@]+:")
 _LEAD = "([{<'\"`"
+# what may precede '://' without being masked: a scheme, optionally after "name=" (url=https://...)
+_PLAIN_SCHEME = re.compile(r"(?:[A-Za-z0-9_.\-]*=)?[A-Za-z0-9+.\-]+$")
 # secret-shaped values, wherever they appear: the scrub gate's patterns plus looser variants
 _SECRET_VALUES = [rx for rule, rx in SECRET_PATTERNS if rule != "secret:private-key"] + [
     re.compile(r"AIza[0-9A-Za-z_\-]{20,}"),
@@ -56,7 +60,7 @@ def _secret_name(name):
 
 def _redact_params(tok):
     """Every ``name=value`` (split on ? & ; #, and on '=' chains): a secret-ish name redacts the rest of
-    the value up to the next '&', ';' or '#' ('?' inside a value does not end it).
+    the value up to the next '&' or '#' (a '?' or ';' inside a value does not end it).
     Returns (text, open) where ``open`` means a secret value was still running at the end."""
     if "=" not in tok:
         return tok, False
@@ -64,7 +68,7 @@ def _redact_params(tok):
     redacting = False
     for part in _DELIM.split(tok):
         if len(part) == 1 and part in "?&;#":
-            if part != "?":
+            if part in "&#":  # only '&' and '#' end a secret value
                 redacting = False
             if not redacting:
                 out.append(part)
@@ -96,13 +100,20 @@ def _cut(tok, a, b, repl):
 def _redact_token(m):
     tok = m.group(0)
     if "@" in tok:
+        lead = len(tok) - len(tok.lstrip(_LEAD))
+        last_at = tok.rfind("@")
         first = tok.find("://")
-        if first >= 0:
-            last_at = tok.rfind("@")
-            if last_at > first:
-                tok = _cut(tok, first + 3, last_at + 1, MASK + "@")
+        plain_scheme = 0 <= first and bool(_PLAIN_SCHEME.match(tok, lead, first))
+        if _SCP_AT.match(tok, last_at) and (first < 0 or first > last_at or not plain_scheme):
+            # x@host:path (scp-like), including odd prefixes that merely contain '://': keep from host on
+            tok = _cut(tok, lead, last_at + 1, "")
+        elif 0 <= first < last_at:
+            tok = _cut(tok, first + 3, last_at + 1, MASK + "@")
+            if not plain_scheme:  # whatever sits where the scheme should be could be a credential too
+                tok = tok[:lead] + MASK + tok[first:]
+        first = tok.find("://")
         head = tok[:first] if first >= 0 else tok
-        if "@" in head:  # scp-like user@host:path before any '://'
+        if "@" in head:  # an earlier scp-like user@host: before any '://'
             last = None
             for sm in _SCP_AT.finditer(head):
                 last = sm
