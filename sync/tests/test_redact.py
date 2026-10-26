@@ -55,6 +55,68 @@ class RedactUrlTest(unittest.TestCase):
         self.assertIn("me@example.com", out)  # plain emails are not URLs
 
 
+class RedactTextTest(unittest.TestCase):
+    """redact_text must agree with redact_url on every URL it finds."""
+
+    def test_at_in_password(self):
+        for text in ("clone https://user:p@ss@github.com/o/r.git now",
+                     "clone https://user:p@ss@w0rd@github.com/o/r.git",
+                     "https://u:a?b#c@github.com/o/r"):
+            with self.subTest(text=text):
+                out = redact_text(text)
+                self.assertNotIn("p@ss", out)
+                self.assertNotIn("u:a", out)
+                self.assertIn("https://github.com/o/r", out)
+        self.assertEqual(redact_url("https://user:p@ss@w0rd@github.com/o/r.git"), "https://github.com/o/r.git")
+
+    def test_query_param_tokens(self):
+        for name in ("token", "access_token", "private_token", "key", "api_key", "password", "secret", "sig",
+                     "X-Amz-Signature", "client_secret"):
+            with self.subTest(name=name):
+                url = "https://gitlab.example.com/o/r.git?%s=%s&ref=main" % (name, TOKEN)
+                for out in (redact_url(url), redact_text("fatal: could not read %s: 401" % url)):
+                    self.assertNotIn(TOKEN, out)
+                    self.assertIn("ref=main", out)
+                    self.assertIn("=REDACTED", out)
+        # ordinary parameters are left alone
+        self.assertEqual(redact_url("https://h/x?ref=main&page=2"), "https://h/x?ref=main&page=2")
+        self.assertEqual(redact_url("https://h/x?monkey=1"), "https://h/x?monkey=1")
+
+    def test_multiple_urls_one_line(self):
+        line = ("from https://a:%s@github.com/o/a.git and https://github.com/o/b.git,"
+                "https://b:%s@gitlab.com/o/c.git;git@github.com:o/d.git" % (TOKEN, TOKEN))
+        out = redact_text(line)
+        self.assertNotIn(TOKEN, out)
+        self.assertEqual(out, "from https://github.com/o/a.git and https://github.com/o/b.git,"
+                              "https://gitlab.com/o/c.git;github.com:o/d.git")
+
+    def test_trailing_punctuation(self):
+        cases = {
+            "see https://u:%s@h.com/r." % TOKEN: "see https://h.com/r.",
+            "(https://u:%s@h.com/r)" % TOKEN: "(https://h.com/r)",
+            "'https://u:%s@h.com/r/': 403" % TOKEN: "'https://h.com/r/': 403",
+            '"https://u:%s@h.com/r?token=%s",' % (TOKEN, TOKEN): '"https://h.com/r?token=REDACTED",',
+            "<https://u:%s@h.com/r>!" % TOKEN: "<https://h.com/r>!",
+            "`git clone https://%s@h.com/r.git`;" % TOKEN: "`git clone https://h.com/r.git`;",
+        }
+        for text, expect in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact_text(text), expect)
+
+    def test_text_without_urls_unchanged(self):
+        for text in ("mail me@example.com: hi", "a@b:12 is a time", "no urls here", "path/to/file.md:12",
+                     "https://github.com/o/r and /local/path"):
+            with self.subTest(text=text):
+                self.assertEqual(redact_text(text), text)
+
+    def test_one_parser(self):
+        urls = ["https://u:p@ss@h.com:8443/x?token=%s#frag" % TOKEN, "ssh://git@h.com/x.git",
+                "git@github.com:o/r.git", "https://h.com/x?api_key=%s" % TOKEN, "http://[::1]:3000/r"]
+        for u in urls:
+            with self.subTest(u=u):
+                self.assertEqual(redact_text("x %s y" % u), "x %s y" % redact_url(u))
+
+
 class RedactionInUseTest(unittest.TestCase):
     def setUp(self):
         self.sb = Sandbox()
