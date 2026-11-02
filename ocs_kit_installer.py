@@ -904,12 +904,13 @@ def web_dockerfile(kind, offset, web_user):
                       "RUN chown -R %s /app" % web_user, "USER %s" % web_user, "ENV HOME=/tmp", ""])
 
 
-def render_compose_override(kind, offset, web_user=None):
+def render_compose_override(kind, offset, web_user=None, web_as_root=False):
     """docker-compose.override.yml. With an offset: host ports +offset and separate image names,
     so a second copy can run next to an existing one (Compose 2.24+ for !override). With web_user
     (Linux): the web service is built from base_image_name() + web_dockerfile(), so it runs as
     that uid:gid and the files it writes into the bind-mounted data folders belong to that user
-    (no ownership changes on the host)."""
+    (no ownership changes on the host). web_as_root: an install whose data an older version wrote
+    as root; the image's own non-root user could not write it, so the service stays root."""
     lines = ["# Written by the OCS-in-a-Kit installer. Re-run the installer to change it.", "services:"]
     for svc, ports in COMPOSE_SERVICES[kind].items():
         body = []
@@ -921,6 +922,8 @@ def render_compose_override(kind, offset, web_user=None):
             body += ["        " + l for l in web_dockerfile(kind, offset, web_user).splitlines()]
         elif offset:
             body.append("    image: ocskit_%s_%s" % (kind, svc))
+        if svc == "web" and web_as_root:
+            body.append('    user: "0:0"')
         if offset and ports:
             body.append("    ports: !override")
             body += ['      - "%d:%d"' % (p + offset, p) for p in ports]
@@ -1753,10 +1756,12 @@ class Installer:
             web_user = container_user_override(kind, uid, gid)
             self.web_users[kind] = None
             foreign = foreign_owned(d, DATA_DIRS[kind], uid) if (web_user and not self.dry) else []
+            # Spring's image used to run as root. Data it wrote then needs root to stay writable.
+            web_as_root = bool(foreign) and kind == "spring"
             if foreign:
                 web_user = None
                 msg = ("%s: %d file(s) in its data folder belong to another user (e.g. %s, written as "
-                       "root by an older version), so its container keeps its image's default user. To "
+                       "root by an older version), so its container keeps its current user. To "
                        "switch it to your user later: stop it, give those files to you "
                        "(sudo chown -R %s %s), and re-run the installer."
                        % (kind, len(foreign), foreign[0], "%d:%d" % (uid, gid),
@@ -1765,10 +1770,12 @@ class Installer:
                 self.results["warnings"].append(msg)
             self.web_users[kind] = web_user
             override = d / "docker-compose.override.yml"
-            if offset or web_user:
-                self.write(override, render_compose_override(kind, offset, web_user),
+            if offset or web_user or web_as_root:
+                self.write(override, render_compose_override(kind, offset, web_user, web_as_root),
                            describe=", ".join(x for x in ("host ports +%d" % offset if offset else "",
-                                                          "web runs as %s" % web_user if web_user else "") if x))
+                                                          "web runs as %s" % web_user if web_user else "",
+                                                          "web stays root for its existing data" if web_as_root
+                                                          else "") if x))
             elif override.exists() and "OCS-in-a-Kit installer" in self.read(override, ""):
                 if self.dry:
                     self.log("[dry-run] remove %s" % override)

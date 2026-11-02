@@ -653,6 +653,9 @@ class PortOffsetTests(unittest.TestCase):
             self.assertIn("FROM ocskit_flask_base_5", both)
             self.assertIn('ports: !override\n      - "8592:8587"', both)
             self.assertIn("image: ocskit_flask_socketio", both)
+            root = ki.render_compose_override("spring", 0, None, True)
+            self.assertIn('  web:\n    user: "0:0"\n', root)
+            self.assertNotIn("build", root)
 
 
 class NginxTests(unittest.TestCase):
