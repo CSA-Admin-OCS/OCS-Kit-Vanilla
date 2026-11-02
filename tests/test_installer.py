@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -637,6 +638,32 @@ class PortOffsetTests(unittest.TestCase):
             self.assertEqual(ki.foreign_owned(tmp, ["volumes"], me), [])
             self.assertEqual(len(ki.foreign_owned(tmp, ["volumes"], me + 1)), 2)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "ownership check runs on Linux")
+    def test_foreign_data_stops_with_the_fix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cat = ki.validate_catalog(json.loads(json.dumps(FIXTURE)))
+            root = Path(tmp)
+            for kind in ("flask", "spring"):
+                (root / kind).mkdir()
+            inst = ki.Installer(good_answers(install_dir=tmp), cat)
+            bad = str(root / "spring" / "volumes" / "sqlite.db")
+
+            def owned(checkout, rels, uid):
+                return [bad] if str(checkout).endswith("spring") else []
+            with mock.patch.object(ki, "foreign_owned", owned), self.assertRaises(ki.InstallError) as ctx:
+                inst.prepare_backend_dirs()
+            msg = str(ctx.exception)
+            self.assertIn("docker run --rm -v %s:/d alpine chown -R %d:%d /d"
+                          % (root / "spring" / "volumes", os.getuid(), os.getgid()), msg)
+            self.assertIn(bad, msg)
+            override = root / "spring" / "docker-compose.override.yml"
+            self.assertFalse(override.exists())
+
+    def test_override_never_runs_as_root(self):
+        for args in (("spring", 0), ("spring", 5, "1000:1000"), ("flask", 0, "1000:1000")):
+            self.assertNotIn("user:", ki.render_compose_override(*args))
+        self.assertNotIn('"0:0"', Path(ki.__file__).read_text())
+
     def test_container_user_override(self):
         self.assertIsNone(ki.container_user_override("flask", 0, 0))
         self.assertIsNone(ki.container_user_override("flask", None, None))
@@ -653,9 +680,6 @@ class PortOffsetTests(unittest.TestCase):
             self.assertIn("FROM ocskit_flask_base_5", both)
             self.assertIn('ports: !override\n      - "8592:8587"', both)
             self.assertIn("image: ocskit_flask_socketio", both)
-            root = ki.render_compose_override("spring", 0, None, True)
-            self.assertIn('  web:\n    user: "0:0"\n', root)
-            self.assertNotIn("build", root)
 
 
 class NginxTests(unittest.TestCase):
