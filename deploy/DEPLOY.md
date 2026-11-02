@@ -82,8 +82,9 @@ Each reports your kit. Admin login (password in `CREDENTIALS.txt`) must answer 2
     curl -si https://spring.myschool.org/authenticate -H 'Content-Type: application/json' \
       -d '{"uid":"admin","password":"..."}' | head -20
 
-The first boot also seeds sample accounts with the default password, and on Spring an extra admin,
-`myuser`. Sign in as admin and delete them or change their passwords before real use.
+The first boot also seeds sample accounts with the default password. Spring creates an extra admin,
+`myuser`, only if you set `MY_PASSWORD`. Sign in as admin and delete the sample accounts or change their
+passwords before real use.
 
 ## 9. Point the website at the backends
 
