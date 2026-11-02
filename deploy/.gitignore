@@ -1,0 +1,7 @@
+# Everything setup.py generates (secrets, rendered configs) and the data folders
+.env
+flask.env
+spring.env
+CREDENTIALS.txt
+out/
+data/

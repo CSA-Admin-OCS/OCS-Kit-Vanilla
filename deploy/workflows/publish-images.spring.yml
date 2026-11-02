@@ -1,0 +1,55 @@
+# Template: copy to OCS-Kit-Spring's .github/workflows/publish-images.yml to activate.
+# Builds and pushes on v* tags. Repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
+# A pre-release tag (v1.2.0-rc1) does not move the -latest tags.
+name: Publish images
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_REPO: wolfjack20/ocs-in-kit
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: spring
+            context: .
+          - name: spring-runner
+            context: runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Compute tags
+        id: tags
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          {
+            echo "version=$version"
+            echo "list<<EOF"
+            echo "$IMAGE_REPO:$NAME-$version"
+            case "$version" in *-*) ;; *) echo "$IMAGE_REPO:$NAME-latest" ;; esac
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.tags.outputs.list }}
+          labels: org.opencontainers.image.version=${{ steps.tags.outputs.version }}

@@ -1,0 +1,93 @@
+# OCS-in-a-Kit production stack, published images only. Run ./setup.py first (see DEPLOY.md).
+# Generated .env sets the project name, IMAGE_TAG, host ports and the data folders' owner;
+# a variable in the shell overrides .env, e.g. FLASK_HOST_PORT=18587 docker compose up -d
+#
+# Published ports listen on 127.0.0.1 only: nginx fronts them. Runners publish nothing, and sit
+# on internal networks with no internet access, reachable only from their backend. The Docker
+# socket is not mounted anywhere.
+name: ${COMPOSE_PROJECT_NAME:-ocs-kit}
+
+x-service: &service
+  restart: unless-stopped
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  flask:
+    <<: *service
+    image: wolfjack20/ocs-in-kit:flask-${IMAGE_TAG:-latest}
+    # Same owner as ./data, whatever the deploy user's uid (setup.py; the image default is 1000)
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    env_file: flask.env
+    ports:
+      - "127.0.0.1:${FLASK_HOST_PORT:-8587}:8587"
+    volumes:
+      - ./data/flask/instance:/app/instance
+    networks:
+      - flask
+      - flask_runner
+    depends_on:
+      - flask_runner
+
+  socket:
+    <<: *service
+    image: wolfjack20/ocs-in-kit:socket-${IMAGE_TAG:-latest}
+    environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+    ports:
+      - "127.0.0.1:${SOCKET_HOST_PORT:-8500}:8500"
+    networks:
+      - flask
+
+  flask_runner:
+    <<: *service
+    image: wolfjack20/ocs-in-kit:flask-runner-${IMAGE_TAG:-latest}
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 128
+    networks:
+      flask_runner:
+        aliases:
+          - code_runner   # the Flask backend calls http://code_runner:8591
+
+  spring:
+    <<: *service
+    image: wolfjack20/ocs-in-kit:spring-${IMAGE_TAG:-latest}
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    env_file: spring.env
+    ports:
+      - "127.0.0.1:${SPRING_HOST_PORT:-8585}:8585"
+      - "127.0.0.1:${SPRING_WS_HOST_PORT:-8589}:8589"
+    volumes:
+      - ./data/spring/volumes:/app/volumes
+    networks:
+      - spring
+      - spring_runner
+    depends_on:
+      - spring_runner
+
+  spring_runner:
+    <<: *service
+    image: wolfjack20/ocs-in-kit:spring-runner-${IMAGE_TAG:-latest}
+    mem_limit: 768m
+    cpus: "1.0"
+    pids_limit: 256
+    networks:
+      spring_runner:
+        aliases:
+          - code_runner   # JAVA_RUNNER_URL=http://code_runner:8592
+
+networks:
+  flask:
+  spring:
+  flask_runner:
+    internal: true
+  spring_runner:
+    internal: true

@@ -1,0 +1,14 @@
+{
+  "description": "Second stack next to production OCS on the same server: its own project, ports, hostnames and cookies",
+  "target_dir": "~/ocs-kit-deploy",
+  "project": "ocs-kit",
+  "host_prefix": "kit-",
+  "ports": {"flask": 8687, "spring": 8685, "spring_ws": 8689, "socket": 8600},
+  "host_only_cookies": true,
+  "cookies": {
+    "flask_jwt": "kit_jwt_python_flask",
+    "flask_session": "kit_sess_python_flask",
+    "spring_jwt": "kit_jwt_java_spring",
+    "spring_session": "kit_sess_java_spring"
+  }
+}

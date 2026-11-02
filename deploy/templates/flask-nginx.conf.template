@@ -1,0 +1,47 @@
+# Nginx reverse proxy for the OCS Kit Flask backend.
+#
+# Placeholders (${...}) are filled in with envsubst. Pass the variable list explicitly so
+# nginx's own $variables are left untouched:
+#
+#   export SITE_DOMAIN=example.org FLASK_PORT=8587 SOCKET_PORT=8500
+#   envsubst '${SITE_DOMAIN} ${FLASK_PORT} ${SOCKET_PORT}' \
+#       < deploy/nginx.conf.template > /etc/nginx/sites-available/flask
+#   sudo ln -s /etc/nginx/sites-available/flask /etc/nginx/sites-enabled/flask
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d flask.${SITE_DOMAIN}     # adds the HTTPS (443) server block
+#
+# Request flow: browser -> DNS (flask.${SITE_DOMAIN} -> this server) -> nginx :80/:443
+#   -> proxy_pass to the Flask container on localhost:${FLASK_PORT}.
+#
+# CORS is handled by Flask (CORS_ORIGINS in .env), so nginx does not add CORS headers.
+# Adding them here as well would send duplicate Access-Control-Allow-Origin headers,
+# which browsers reject.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name flask.${SITE_DOMAIN};
+
+    # Socket.IO (WebSocket) traffic goes to the socket service.
+    # Upgrade/Connection headers switch the connection from HTTP to WebSocket.
+    location /socket.io/ {
+        proxy_pass http://localhost:${SOCKET_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Everything else goes to Flask (gunicorn).
+    location / {
+        proxy_pass http://localhost:${FLASK_PORT};
+        proxy_http_version 1.1;
+        # Preserve the original Host so Flask builds correct URLs and sees the real domain
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 5m;  # matches Flask MAX_CONTENT_LENGTH
+    }
+}
