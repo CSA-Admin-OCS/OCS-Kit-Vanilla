@@ -120,7 +120,7 @@ class PagesRepoTest(_RepoChecks, unittest.TestCase):
         if not shutil.which("bundle") and not shutil.which("jekyll"):
             self.skipTest("bundle/jekyll not installed")
         failures = []
-        for kit in sorted(cat.data.get("kits", {})):
+        for kit in sorted(cat.data.get("kits", {})) + ["all"]:
             with self.subTest(kit=kit):
                 tmp = tempfile.mkdtemp(prefix="ocs-kit-build-%s-" % kit, dir=SCRATCH)
                 try:
@@ -148,12 +148,14 @@ def _build_and_check(root, files, kit, tmp):
         src = os.path.join(root, extra)
         if os.path.exists(src) and not os.path.exists(os.path.join(work, extra)):
             os.symlink(src, os.path.join(work, extra))
-    rc, out = _run([sys.executable, "scripts/apply_kit.py", "--kit", kit], work)
+    # "all" is the default runtime-ready build: every feature's pages ship and are switched live.
+    args = ["--build", "all"] if kit == "all" else ["--kit", kit]
+    rc, out = _run([sys.executable, "scripts/apply_kit.py"] + args, work)
     if rc != 0:
-        return ["apply_kit --kit %s failed:\n%s" % (kit, out[-3000:])]
+        return ["apply_kit %s failed:\n%s" % (" ".join(args), out[-3000:])]
     site = os.path.join(work, "_site")
     if os.path.isfile(os.path.join(work, "Makefile")) and os.path.isdir(os.path.join(work, "venv")):
-        rc, out = _run(["make", "build", "KIT=%s" % kit], work)
+        rc, out = _run(["make", "build"] + ([] if kit == "all" else ["KIT=%s" % kit]), work)
     else:
         cfgs = "_config.yml" + (",_config.kit.yml" if os.path.isfile(os.path.join(work, "_config.kit.yml")) else "")
         rc, out = _run(["bundle", "exec", "jekyll", "build", "--config", cfgs, "-d", site], work)
