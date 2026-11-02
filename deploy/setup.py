@@ -408,8 +408,8 @@ Same accounts on both backends:
   member    uid: {member:<10} password: {default}
 
 Default password (uid above, sample accounts, what an admin "reset password" sets): {default}
-The seed also creates sample accounts with the default password, including an extra ADMIN on
-Spring (uid myuser). Delete or change them after the first login (see DEPLOY.md).
+The seed also creates sample accounts with the default password. Delete or change them after
+the first login (see DEPLOY.md).
 Changing a password here does nothing once the database exists: accounts are seeded on first boot.
 
 Backends: https://{flask_host}  https://{spring_host}
