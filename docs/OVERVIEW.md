@@ -76,6 +76,7 @@ In the table, V is Vanilla, E is Education and B is Business. A blank cell means
 | **Game engine** | General | | ✓ | | JavaScript game engine, game projects, multiplayer, leaderboards, AI NPCs | Nothing |
 | **AI chatbot** | General | | ✓ | ✓ | Website chatbot or tutor, answered through the backend so keys stay on the server | `GEMINI_API_KEY` (Flask) |
 | **Social** | General | | ✓ | ✓ | Microblog, posts, comments, notes, announcements, chat and direct messages | Nothing |
+| **Events** | General | ✓ | ✓ | ✓ | Admin-managed upcoming events that scroll across the site in time order, plus an events page | Nothing |
 | **Calendar** | General | | ✓ | ✓ | Calendar, events, issue and calendar sync | Nothing |
 | **Analytics** | General | | ✓ | ✓ | Usage analytics, GitHub contribution stats, skill snapshots, dashboards | Nothing |
 | **Resume builder** | General | | ✓ | ✓ | Personal resume and profile pages | Nothing |

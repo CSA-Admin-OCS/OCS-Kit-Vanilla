@@ -20,9 +20,9 @@ you control. The installer handles both, and you can install them on different m
 
 | Kit | For | Roles | Features on by default |
 |---|---|---|---|
-| **Vanilla** | A simple site you can hand to a student | Admin, Editor, User | Core: accounts, profile, blog and notebooks |
-| **Education** | A CS classroom | Admin, Teacher, Student | Core, lessons (Python, Java, guides), code runners, assignments and grading, game engine, AI chatbot, AI grading, calendar, analytics, hall pass, social, resume |
-| **Business** | A company or organization serving its own users | Admin, Manager, Member | Core, AI chatbot, social, calendar, analytics, resume |
+| **Vanilla** | A simple site you can hand to a student | Admin, Editor, User | Core (accounts, profile, blog and notebooks) and events |
+| **Education** | A CS classroom | Admin, Teacher, Student | Core, events, lessons (Python, Java, guides), code runners, assignments and grading, game engine, AI chatbot, AI grading, calendar, analytics, hall pass, social, resume |
+| **Business** | A company or organization serving its own users | Admin, Manager, Member | Core, events, AI chatbot, social, calendar, analytics, resume |
 
 You are not locked in: any kit can add or remove features during install, and Admins can turn
 features on and off later from the website's admin dashboard. Educational features (lessons,
